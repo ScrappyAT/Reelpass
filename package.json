@@ -19,8 +19,11 @@
     "db:setup:prod": "npm run db:setup:prod --workspace=@matinee/api",
     "db:migrate": "npm run db:migrate --workspace=@matinee/api"
   },
-  "devDependencies": {
-    "eslint": "^10.12.0",
+  "dependencies": {
+    "@types/node": "^22.10.2",
     "typescript": "^5.7.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.12.0"
   }
 }

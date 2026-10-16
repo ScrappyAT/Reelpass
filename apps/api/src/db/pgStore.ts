@@ -3,6 +3,8 @@ import {
   Booking,
   BookingStatus,
   Cinema,
+  CinemaAmenity,
+  ScreenType,
   Seat,
   SeatMapLayout,
   SeatType,
@@ -50,11 +52,133 @@ export class BookingConflictError extends Error {
   }
 }
 
+export interface UserDbRow {
+  id: string;
+  email: string;
+  full_name: string;
+  phone_number: string | null;
+  role: string;
+  password_hash: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export interface CinemaDbRow {
+  id: string;
+  name: string;
+  city: string;
+  neighborhood: string | null;
+  address: string;
+  postal_code: string | null;
+  phone: string | null;
+  latitude: number | string;
+  longitude: number | string;
+  amenities: string[];
+  image_url: string;
+  is_demo: boolean;
+}
+
+export interface ShowtimeDbRow {
+  id: string;
+  movie_id: string;
+  cinema_id: string;
+  auditorium_id: string;
+  movie_title?: string | null;
+  movie_title_cached?: string | null;
+  movie_poster_url?: string | null;
+  cinema_name?: string | null;
+  cinema_city?: string | null;
+  cinema_neighborhood?: string | null;
+  auditorium_name?: string | null;
+  auditorium_screen_type?: string | null;
+  start_time: Date | string;
+  end_time: Date | string;
+  format: string;
+  price_standard_kobo: number | string;
+  price_vip_kobo: number | string;
+  available_count?: number | string;
+  total_seats?: number | string;
+  rows_count?: number | string;
+  columns_count?: number | string;
+}
+
+export interface SeatRow {
+  seat_id: string;
+  row_label: string;
+  seat_number: number;
+  seat_type: string;
+  status: string;
+  hold_expires_at: Date | string | null;
+  price_standard_kobo: number | string;
+  price_vip_kobo: number | string;
+}
+
+export interface LockedSeatRow {
+  id: string;
+  row_label: string;
+  seat_number: number;
+  seat_type: string;
+  status: string;
+  held_by_user_id: string | null;
+  hold_expires_at: Date | string | null;
+}
+
+export interface BookingDbRow {
+  id: string;
+  booking_reference: string;
+  user_id: string;
+  showtime_id: string;
+  total_amount_kobo: number | string;
+  currency: string;
+  status: string;
+  payment_status: string;
+  payment_id: string | null;
+  idempotency_key: string | null;
+  qr_code: string;
+  created_at: Date | string;
+  expires_at: Date | string | null;
+}
+
+export interface BookingSeatDbRow {
+  seat_id: string;
+  seat_label: string;
+  seat_type: string;
+  price_kobo: number | string;
+  row_label: string;
+  seat_number: number;
+}
+
+export interface TicketDbRow {
+  id: string;
+  booking_id: string;
+  showtime_id: string;
+  seat_id: string;
+  price_kobo: number | string;
+  qr_code_data: string;
+}
+
+export interface PaymentDbRow {
+  id: string;
+  booking_id: string;
+  amount_kobo: number | string;
+  currency: string;
+  provider: string;
+  reference: string;
+  transaction_id: string | null;
+  status: 'pending' | 'successful' | 'failed';
+  raw_response: unknown;
+  created_at: Date | string;
+}
+
 function mapSeatType(t: string): SeatType {
   return t === 'vip' ? 'vip' : t === 'wheelchair' ? 'wheelchair' : 'standard';
 }
 
-function mapShowtime(row: any): Showtime {
+function mapScreenType(t?: string | null): ScreenType {
+  return t === 'imax' ? 'imax' : t === 'dolby' ? 'dolby' : t === 'vip' ? 'vip' : 'standard';
+}
+
+function mapShowtime(row: ShowtimeDbRow): Showtime {
   return {
     id: row.id,
     movieId: row.movie_id,
@@ -111,12 +235,12 @@ export class PgStore {
 
   // ------------------------------------------------------------------ users
   async findUserByEmail(email: string): Promise<UserRecord | null> {
-    const res = await this.pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const res = await this.pool.query<UserDbRow>('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
     return res.rows[0] ? this.mapUser(res.rows[0]) : null;
   }
 
   async findUserById(id: string): Promise<UserRecord | null> {
-    const res = await this.pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    const res = await this.pool.query<UserDbRow>('SELECT * FROM users WHERE id = $1', [id]);
     return res.rows[0] ? this.mapUser(res.rows[0]) : null;
   }
 
@@ -128,7 +252,7 @@ export class PgStore {
     passwordHash: string;
     role?: UserRole;
   }): Promise<UserRecord> {
-    const res = await this.pool.query(
+    const res = await this.pool.query<UserDbRow>(
       `INSERT INTO users (id, email, password_hash, full_name, phone_number, role)
        VALUES ($1, LOWER($2), $3, $4, $5, $6) RETURNING *`,
       [input.id, input.email, input.passwordHash, input.fullName, input.phoneNumber ?? null, input.role ?? 'customer']
@@ -136,7 +260,7 @@ export class PgStore {
     return this.mapUser(res.rows[0]);
   }
 
-  private mapUser(row: any): UserRecord {
+  private mapUser(row: UserDbRow): UserRecord {
     return {
       id: row.id,
       email: row.email,
@@ -152,17 +276,17 @@ export class PgStore {
   // --------------------------------------------------------------- catalog
   async listCinemas(city?: string): Promise<Cinema[]> {
     const res = city
-      ? await this.pool.query('SELECT * FROM cinemas WHERE LOWER(city) = LOWER($1) ORDER BY created_at, id', [city])
-      : await this.pool.query('SELECT * FROM cinemas ORDER BY created_at, id');
+      ? await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas WHERE LOWER(city) = LOWER($1) ORDER BY created_at, id', [city])
+      : await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas ORDER BY created_at, id');
     return res.rows.map((r) => this.mapCinema(r));
   }
 
   async getCinema(id: string): Promise<Cinema | null> {
-    const res = await this.pool.query('SELECT * FROM cinemas WHERE id = $1', [id]);
+    const res = await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas WHERE id = $1', [id]);
     return res.rows[0] ? this.mapCinema(res.rows[0]) : null;
   }
 
-  private mapCinema(row: any): Cinema {
+  private mapCinema(row: CinemaDbRow): Cinema {
     return {
       id: row.id,
       name: row.name,
@@ -173,7 +297,7 @@ export class PgStore {
       phone: row.phone ?? undefined,
       latitude: Number(row.latitude),
       longitude: Number(row.longitude),
-      amenities: row.amenities ?? [],
+      amenities: (row.amenities as CinemaAmenity[]) ?? [],
       imageUrl: row.image_url,
       isDemo: row.is_demo,
     };
@@ -196,24 +320,24 @@ export class PgStore {
       clauses.push(`(st.start_time AT TIME ZONE 'Africa/Lagos')::date = $${params.length}::date`);
     }
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
-    const res = await this.pool.query(`${SHOWTIME_SELECT}${where} ORDER BY st.start_time`, params);
+    const res = await this.pool.query<ShowtimeDbRow>(`${SHOWTIME_SELECT}${where} ORDER BY st.start_time`, params);
     return res.rows.map(mapShowtime);
   }
 
   async getShowtime(id: string): Promise<Showtime | null> {
-    const res = await this.pool.query(`${SHOWTIME_SELECT} WHERE st.id = $1`, [id]);
+    const res = await this.pool.query<ShowtimeDbRow>(`${SHOWTIME_SELECT} WHERE st.id = $1`, [id]);
     return res.rows[0] ? mapShowtime(res.rows[0]) : null;
   }
 
   async getSeatMap(showtimeId: string): Promise<SeatMapLayout | null> {
-    const showtimeRes = await this.pool.query(
+    const showtimeRes = await this.pool.query<ShowtimeDbRow>(
       `${SHOWTIME_SELECT} WHERE st.id = $1`,
       [showtimeId]
     );
     if (!showtimeRes.rows[0]) return null;
     const st = showtimeRes.rows[0];
 
-    const seatsRes = await this.pool.query(
+    const seatsRes = await this.pool.query<SeatRow>(
       `SELECT ss.seat_id, s.row_label, s.seat_number, s.seat_type,
               ss.status, ss.hold_expires_at,
               st.price_standard_kobo, st.price_vip_kobo
@@ -251,12 +375,12 @@ export class PgStore {
 
     return {
       auditoriumId: st.auditorium_id,
-      auditoriumName: st.auditorium_name,
-      screenType: st.auditorium_screen_type,
+      auditoriumName: st.auditorium_name ?? '',
+      screenType: mapScreenType(st.auditorium_screen_type),
       showtimeId,
       totalSeats: seats.length,
       rows,
-      columns: Number(st.columns_count),
+      columns: Number(st.columns_count ?? 16),
       seats,
     };
   }
@@ -275,7 +399,7 @@ export class PgStore {
     return withTransaction(this.pool, async (client) => {
       // Idempotent replay: return the previously created booking for this key.
       if (input.idempotencyKey) {
-        const existing = await client.query(
+        const existing = await client.query<{ id: string }>(
           'SELECT id FROM bookings WHERE user_id = $1 AND idempotency_key = $2',
           [input.userId, input.idempotencyKey]
         );
@@ -288,7 +412,7 @@ export class PgStore {
       // Reclaim seats from stale (expired) pending bookings so they are usable.
       await this.expireStaleBookings(client);
 
-      const showtimeRes = await client.query(
+      const showtimeRes = await client.query<ShowtimeDbRow>(
         'SELECT * FROM showtimes WHERE id = $1',
         [input.showtimeId]
       );
@@ -298,7 +422,7 @@ export class PgStore {
       const showtime = showtimeRes.rows[0];
 
       // Lock the per-showtime seat rows. FOR UPDATE serialises competing claims.
-      const locked = await client.query(
+      const locked = await client.query<LockedSeatRow>(
         `SELECT s.id, s.row_label, s.seat_number, s.seat_type,
                 ss.status, ss.held_by_user_id, ss.hold_expires_at
            FROM showtime_seats ss
@@ -308,7 +432,7 @@ export class PgStore {
         [input.showtimeId, seatIds]
       );
 
-      const found = new Map(locked.rows.map((r) => [r.id as string, r]));
+      const found = new Map<string, LockedSeatRow>(locked.rows.map((r) => [r.id, r]));
       const missing = seatIds.filter((id) => !found.has(id));
       if (missing.length > 0) {
         throw new BookingConflictError(
@@ -341,7 +465,7 @@ export class PgStore {
       }
 
       // Server-side totals only. NEVER trust a client price.
-      const priceFor = (row: any) =>
+      const priceFor = (row: LockedSeatRow) =>
         row.seat_type === 'vip'
           ? Number(showtime.price_vip_kobo)
           : Number(showtime.price_standard_kobo);
@@ -417,7 +541,7 @@ export class PgStore {
     payment?: { paymentId?: string }
   ): Promise<Booking> {
     return withTransaction(this.pool, async (client) => {
-      const res = await client.query('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
+      const res = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
       const booking = res.rows[0];
       if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
       if (booking.user_id !== userId) {
@@ -457,7 +581,7 @@ export class PgStore {
   /** Cancel a pending booking and release its seats. Idempotent. */
   async cancelBooking(bookingId: string, userId: string): Promise<Booking> {
     return withTransaction(this.pool, async (client) => {
-      const res = await client.query('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
+      const res = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
       const booking = res.rows[0];
       if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
       if (booking.user_id !== userId) {
@@ -470,7 +594,7 @@ export class PgStore {
         throw new BookingConflictError('BOOKING_CONFIRMED', 'Confirmed bookings cannot be cancelled here');
       }
 
-      const released = await client.query(
+      const released = await client.query<{ seat_id: string }>(
         'DELETE FROM booking_seats WHERE booking_id = $1 RETURNING seat_id',
         [bookingId]
       );
@@ -494,7 +618,7 @@ export class PgStore {
   /** Expire stale pending bookings and free their seats. Idempotent. */
   async expireStaleBookings(client?: PoolClient): Promise<number> {
     const run = async (c: PoolClient) => {
-      const stale = await c.query(
+      const stale = await c.query<{ id: string; showtime_id: string }>(
         `SELECT id, showtime_id FROM bookings
           WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
           FOR UPDATE`
@@ -502,7 +626,7 @@ export class PgStore {
       if (stale.rowCount === 0) return 0;
 
       const ids = stale.rows.map((r) => r.id);
-      const released = await c.query(
+      const released = await c.query<{ showtime_id: string; seat_id: string }>(
         'DELETE FROM booking_seats WHERE booking_id = ANY($1::text[]) RETURNING showtime_id, seat_id',
         [ids]
       );
@@ -541,7 +665,7 @@ export class PgStore {
   }
 
   async listBookingsForUser(userId: string): Promise<Booking[]> {
-    const res = await this.pool.query(
+    const res = await this.pool.query<{ id: string }>(
       `SELECT id FROM bookings WHERE user_id = $1 ORDER BY created_at DESC`,
       [userId]
     );
@@ -559,21 +683,21 @@ export class PgStore {
   }
 
   private async loadBooking(client: PoolClient, id: string): Promise<Booking> {
-    const bRes = await client.query('SELECT * FROM bookings WHERE id = $1', [id]);
+    const bRes = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1', [id]);
     const row = bRes.rows[0];
     if (!row) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
 
-    const stRes = await client.query(`${SHOWTIME_SELECT} WHERE st.id = $1`, [row.showtime_id]);
+    const stRes = await client.query<ShowtimeDbRow>(`${SHOWTIME_SELECT} WHERE st.id = $1`, [row.showtime_id]);
     const showtime = mapShowtime(stRes.rows[0]);
 
-    const seatsRes = await client.query(
+    const seatsRes = await client.query<BookingSeatDbRow>(
       `SELECT bs.seat_id, bs.seat_label, bs.seat_type, bs.price_kobo, s.row_label, s.seat_number
          FROM booking_seats bs JOIN seats s ON s.id = bs.seat_id
         WHERE bs.booking_id = $1 ORDER BY s.row_label, s.seat_number`,
       [id]
     );
 
-    const ticketsRes = await client.query(
+    const ticketsRes = await client.query<TicketDbRow>(
       `SELECT * FROM tickets WHERE booking_id = $1 ORDER BY id`,
       [id]
     );
@@ -612,7 +736,7 @@ export class PgStore {
       totalAmount: Number(row.total_amount_kobo),
       currency: row.currency,
       status: row.status as BookingStatus,
-      paymentStatus: row.payment_status,
+      paymentStatus: row.payment_status as 'pending' | 'successful' | 'failed',
       paymentId: row.payment_id ?? undefined,
       qrCode: row.qr_code,
       createdAt: new Date(row.created_at).toISOString(),
@@ -622,7 +746,7 @@ export class PgStore {
 
   // ---------------------------------------------------------- availability
   async countAvailableSeats(showtimeId: string): Promise<number> {
-    const res = await this.pool.query(
+    const res = await this.pool.query<{ c: number }>(
       `SELECT COUNT(*)::int AS c FROM showtime_seats
         WHERE showtime_id = $1 AND status = 'AVAILABLE'`,
       [showtimeId]
@@ -641,7 +765,7 @@ export class PgStore {
     status?: 'pending' | 'successful' | 'failed';
     transactionId?: string;
   }): Promise<PaymentRecord> {
-    const res = await this.pool.query(
+    const res = await this.pool.query<PaymentDbRow>(
       `INSERT INTO payments (id, booking_id, amount_kobo, currency, provider, reference, transaction_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (reference) DO UPDATE SET booking_id = EXCLUDED.booking_id
@@ -661,12 +785,12 @@ export class PgStore {
   }
 
   async getPaymentByReference(reference: string): Promise<PaymentRecord | null> {
-    const res = await this.pool.query('SELECT * FROM payments WHERE reference = $1', [reference]);
+    const res = await this.pool.query<PaymentDbRow>('SELECT * FROM payments WHERE reference = $1', [reference]);
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }
 
   async getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null> {
-    const res = await this.pool.query('SELECT * FROM payments WHERE booking_id = $1', [bookingId]);
+    const res = await this.pool.query<PaymentDbRow>('SELECT * FROM payments WHERE booking_id = $1', [bookingId]);
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }
 
@@ -676,7 +800,7 @@ export class PgStore {
     transactionId?: string,
     rawResponse?: unknown
   ): Promise<PaymentRecord | null> {
-    const res = await this.pool.query(
+    const res = await this.pool.query<PaymentDbRow>(
       `UPDATE payments
           SET status = $2, transaction_id = COALESCE($3, transaction_id), raw_response = $4
         WHERE reference = $1
@@ -686,7 +810,7 @@ export class PgStore {
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }
 
-  private mapPayment(row: any): PaymentRecord {
+  private mapPayment(row: PaymentDbRow): PaymentRecord {
     return {
       id: row.id,
       bookingId: row.booking_id,
