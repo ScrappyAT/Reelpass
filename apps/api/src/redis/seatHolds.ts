@@ -68,12 +68,14 @@ class SeatHoldService {
     this.initialized = true;
 
     const url = env.REDIS_URL || 'redis://localhost:6379';
+    const isTls = url.startsWith('rediss://') || process.env.REDIS_TLS === 'true';
     try {
       this.redis = new Redis(url, {
         maxRetriesPerRequest: 1,
-        connectTimeout: 2000,
+        connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 5000),
         lazyConnect: true,
-        retryStrategy: (times) => (times > 3 ? null : 500),
+        ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
+        retryStrategy: (times) => (times > 3 ? null : Math.min(times * 500, 2000)),
       });
 
       this.redis

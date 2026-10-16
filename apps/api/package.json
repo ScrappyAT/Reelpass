@@ -5,13 +5,16 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-migrations.js",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"src/tests/*.test.ts\"",
     "test:pg": "node --import tsx --test \"src/tests/pg/*.test.ts\"",
-    "db:setup": "tsx src/db/setup.ts",
-    "seed": "tsx src/db/setup.ts"
+    "db:setup": "node scripts/db-setup.js",
+    "db:setup:prod": "node dist/db/setup.js",
+    "db:migrate": "node scripts/db-migrate.js",
+    "db:migrate:prod": "node dist/db/migrateCli.js",
+    "seed": "node scripts/db-setup.js"
   },
   "dependencies": {
     "@matinee/shared": "*",

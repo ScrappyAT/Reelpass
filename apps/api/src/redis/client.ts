@@ -18,12 +18,14 @@ class CacheService {
   private initRedis() {
     try {
       const redisUrl = env.REDIS_URL || 'redis://localhost:6379';
+      const isTls = redisUrl.startsWith('rediss://') || process.env.REDIS_TLS === 'true';
       this.redis = new Redis(redisUrl, {
         maxRetriesPerRequest: 1,
-        connectTimeout: 2000,
+        connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 5000),
+        ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
         retryStrategy: (times) => {
-          if (times > 2) return null; // stop reconnecting if not available
-          return 1000;
+          if (times > 3) return null; // stop reconnecting if not available
+          return Math.min(times * 500, 2000);
         },
         lazyConnect: true,
       });

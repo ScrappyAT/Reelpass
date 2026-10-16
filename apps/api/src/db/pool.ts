@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolConfig } from 'pg';
 import { env } from '../config/env';
 
 let pool: Pool | null = null;
@@ -12,20 +12,46 @@ export function getDbPool(): Pool | null {
       env.DATABASE_URL ||
       `postgresql://${env.PGUSER}:${env.PGPASSWORD}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE}`;
 
-    pool = new Pool({
+    const isRemote =
+      connectionString.includes('neon.tech') ||
+      (!connectionString.includes('localhost') && !connectionString.includes('127.0.0.1'));
+
+    // Determine TLS requirement
+    const sslEnv = (process.env.PGSSL || '').toLowerCase();
+    const sslModeEnv = (process.env.PGSSLMODE || '').toLowerCase();
+    const hasSslModeInUrl = connectionString.includes('sslmode=');
+
+    let ssl: boolean | { rejectUnauthorized: boolean } | undefined = undefined;
+
+    if (
+      !hasSslModeInUrl &&
+      (connectionString.includes('neon.tech') ||
+        sslEnv === 'true' ||
+        sslModeEnv === 'require' ||
+        (isRemote && process.env.NODE_ENV === 'production'))
+    ) {
+      // For Neon and cloud databases without an explicit sslmode in query string,
+      // enable TLS with rejectUnauthorized: false for maximum compatibility.
+      ssl = { rejectUnauthorized: false };
+    }
+
+    const poolConfig: PoolConfig = {
       connectionString,
+      ...(ssl ? { ssl } : {}),
       // Requests queue for a connection up to 30s instead of failing fast under
       // heavy seat contention (FOR UPDATE row locks can hold connections busy).
       connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 30000),
       idleTimeoutMillis: 30000,
-      // Sized so the 500-VU seat-contention benchmark queues cleanly at the pool
-      // instead of exhausting PostgreSQL connections. Overridable per environment.
-      max: Number(process.env.PG_POOL_MAX ?? 100),
+      // Default to 20 on remote/serverless Neon databases to prevent connection limits,
+      // or 100 for local high-concurrency benchmarks. Configurable via PG_POOL_MAX.
+      max: Number(process.env.PG_POOL_MAX ?? (isRemote ? 20 : 100)),
       // Never let a single statement hang a pooled connection forever. Must exceed
       // the worst-case FOR UPDATE lock wait under contention.
       statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 30000),
       query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS ?? 30000),
-    });
+    };
+
+    pool = new Pool(poolConfig);
 
     pool.on('error', (err) => {
       console.warn('⚠️ [Database] Unexpected PostgreSQL error on idle client:', err.message);

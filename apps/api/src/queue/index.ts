@@ -10,6 +10,21 @@ export interface BookingJobData {
 
 let bookingQueue: Queue | null = null;
 
+function getRedisConnectionConfig() {
+  const redisUrl = env.REDIS_URL;
+  if (redisUrl) {
+    const isTls = redisUrl.startsWith('rediss://') || process.env.REDIS_TLS === 'true';
+    return {
+      url: redisUrl,
+      ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
+    };
+  }
+  return {
+    host: 'localhost',
+    port: 6379,
+  };
+}
+
 export function getBookingQueue(): Queue | null {
   if (bookingQueue) return bookingQueue;
   if (!cache.isLive()) {
@@ -17,10 +32,7 @@ export function getBookingQueue(): Queue | null {
   }
 
   try {
-    const connection = {
-      host: env.PGHOST || 'localhost',
-      port: 6379,
-    };
+    const connection = getRedisConnectionConfig();
     bookingQueue = new Queue('ticket-processing', { connection });
     return bookingQueue;
   } catch (err) {
@@ -43,10 +55,7 @@ export function startWorker() {
         // Phase 2 will handle automatic ticket release after 10-minute hold expiry
       },
       {
-        connection: {
-          host: env.PGHOST || 'localhost',
-          port: 6379,
-        },
+        connection: getRedisConnectionConfig(),
       }
     );
 

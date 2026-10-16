@@ -10,8 +10,14 @@
     "dev:api": "npm run dev --workspace=@matinee/api",
     "dev:mobile": "npm run start --workspace=@matinee/mobile",
     "build:shared": "npm run build --workspace=@matinee/shared",
+    "build:api": "npm run build --workspace=@matinee/api",
+    "build": "npm run build:shared && npm run build:api",
+    "start": "npm run start --workspace=@matinee/api",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "db:setup": "npm run db:setup --workspace=@matinee/api",
+    "db:setup:prod": "npm run db:setup:prod --workspace=@matinee/api",
+    "db:migrate": "npm run db:migrate --workspace=@matinee/api"
   },
   "devDependencies": {
     "eslint": "^10.12.0",

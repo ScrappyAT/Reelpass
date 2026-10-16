@@ -3,7 +3,6 @@ import { env } from './config/env';
 import { resolveDataMode, isPostgresRequired } from './config/dataMode';
 import { checkDatabaseConnection, getDbPool, closeDbPool } from './db/pool';
 import { runMigrations } from './db/migrate';
-import { seedPgDatabase } from './db/seedPg';
 import { getPgStore } from './db/store';
 import { startWorker } from './queue';
 
@@ -18,8 +17,11 @@ async function bootstrap() {
   if (mode === 'postgres') {
     // Fail loudly if PostgreSQL is configured but unreachable. Never fall back.
     await checkDatabaseConnection(true);
-    await runMigrations();
-    await seedPgDatabase();
+
+    if (process.env.AUTO_MIGRATE === 'true') {
+      console.log('🔄 [ReelPass API] AUTO_MIGRATE=true: checking for pending migrations...');
+      await runMigrations();
+    }
 
     // Background sweep: release seats from expired pending bookings.
     sweeper = setInterval(() => {
@@ -37,9 +39,10 @@ async function bootstrap() {
 
   startWorker();
 
-  const server = app.listen(env.PORT, '0.0.0.0', () => {
-    console.log(`🚀 [ReelPass API] Server listening on all interfaces at port ${env.PORT}${env.API_PREFIX}`);
-    console.log(`📡 [Health Check] Available at http://localhost:${env.PORT}${env.API_PREFIX}/health`);
+  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : env.PORT;
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`🚀 [ReelPass API] Server listening on 0.0.0.0:${port}${env.API_PREFIX}`);
+    console.log(`📡 [Health Check] Available at http://0.0.0.0:${port}${env.API_PREFIX}/health`);
   });
 
   // Keep-alive tuning: under sustained load, connections can sit idle between a

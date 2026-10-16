@@ -18,7 +18,13 @@ const envSchema = z.object({
   DATA_MODE: z.enum(['auto', 'postgres', 'memory']).default('auto'),
 
   // Database
-  DATABASE_URL: z.string().optional(),
+  DATABASE_URL: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .or(z.literal(''))
+    .transform((val) => (val ? val : undefined)),
   PGHOST: z.string().default('localhost'),
   PGPORT: z.coerce.number().default(5432),
   PGUSER: z.string().default('postgres'),
@@ -26,7 +32,13 @@ const envSchema = z.object({
   PGDATABASE: z.string().default('matinee'),
 
   // Redis
-  REDIS_URL: z.string().optional(),
+  REDIS_URL: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .or(z.literal(''))
+    .transform((val) => (val ? val : undefined)),
   SEAT_HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(300),
 
   // JWT

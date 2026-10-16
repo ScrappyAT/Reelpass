@@ -18,9 +18,14 @@ export async function runMigrations(pool: Pool = getDbPool() as Pool): Promise<n
     throw new Error('[migrate] No PostgreSQL pool available');
   }
 
-  const migrationsDir = path.join(__dirname, 'migrations');
+  let migrationsDir = path.join(__dirname, 'migrations');
   if (!fs.existsSync(migrationsDir)) {
-    throw new Error(`[migrate] migrations directory not found: ${migrationsDir}`);
+    const fallbackDir = path.resolve(__dirname, '../../src/db/migrations');
+    if (fs.existsSync(fallbackDir)) {
+      migrationsDir = fallbackDir;
+    } else {
+      throw new Error(`[migrate] migrations directory not found: ${migrationsDir}`);
+    }
   }
 
   const client = await pool.connect();

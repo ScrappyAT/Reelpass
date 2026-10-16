@@ -37,8 +37,8 @@ if (env.NODE_ENV !== 'production') {
   });
 }
 
-// Health check endpoint
-app.get(`${env.API_PREFIX}/health`, (req, res) => {
+// Health check endpoint (available at both root /health and API prefix /api/v1/health)
+app.get(['/health', `${env.API_PREFIX}/health`], (req, res) => {
   const hasTmdbKey = Boolean(env.TMDB_API_KEY && !env.TMDB_API_KEY.includes('your_tmdb_api_key'));
   const mode = resolveDataMode();
   res.json({
