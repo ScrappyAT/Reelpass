@@ -1,0 +1,51 @@
+# ReelPass (Matinee) — local infrastructure for the PostgreSQL-backed booking engine.
+#
+#   docker compose up -d
+#
+# Brings up a dedicated PostgreSQL 16 and Redis 7 for local development and the
+# k6 seat-contention benchmark. These are DEMO/local services only — never point
+# production traffic at them.
+#
+# NOTE: ReelPass is pinned to non-default host ports (PostgreSQL 5455, Redis 6385)
+# so it never collides with other local databases on 5432/6379.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reelpass-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reelpass
+      POSTGRES_PASSWORD: reelpass
+      POSTGRES_DB: reelpass
+      # Fast, deterministic local dev database (NOT a production tuning).
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "5455:5432"
+    volumes:
+      - reelpass_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reelpass -d reelpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command: ["postgres", "-c", "max_connections=300"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: reelpass-redis
+    restart: unless-stopped
+    ports:
+      - "6385:6379"
+    volumes:
+      - reelpass_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+
+volumes:
+  reelpass_pgdata:
+  reelpass_redisdata:

@@ -1,0 +1,12 @@
+{
+  "result": "FAIL",
+  "poolSize": 40,
+  "numUsers": 50,
+  "vus": 500,
+  "created": 40,
+  "conflicts": 2017,
+  "errors": 741,
+  "transportFailureRate": 0.9673798667134339,
+  "latencyAvgMs": 2928.096315398803,
+  "latencyP95Ms": 17276.365994
+}
