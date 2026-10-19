@@ -57,6 +57,7 @@ app.get(['/health', `${env.API_PREFIX}/health`], (req, res) => {
             : 'PostgreSQL (configured but not connected)'
           : 'In-Memory Resilient Demo Store',
       cache: cache.isLive() ? 'Redis (live)' : 'In-Memory TTL Cache Fallback',
+      redis: cache.getDiagnosticInfo(),
       tmdb: hasTmdbKey ? 'TMDB v3 API (live)' : 'Rich Demo Movie Catalog',
     },
     attribution: TMDB_ATTRIBUTION,

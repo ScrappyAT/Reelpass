@@ -5,6 +5,7 @@ import { checkDatabaseConnection, getDbPool, closeDbPool } from './db/pool';
 import { runMigrations } from './db/migrate';
 import { getPgStore } from './db/store';
 import { startWorker } from './queue';
+import { cache } from './redis/client';
 
 async function bootstrap() {
   console.log('🎬 [ReelPass API] Starting backend services...');
@@ -37,6 +38,14 @@ async function bootstrap() {
     console.log('ℹ️ [ReelPass API] In-memory demo mode. Data is not persisted across restarts.');
   }
 
+  // If Redis is configured, give it a moment to complete initial handshake so worker & health status start live
+  if (cache.isConfigured()) {
+    const ready = await cache.waitForReady(Number(process.env.REDIS_BOOTSTRAP_WAIT_MS ?? 2500)).catch(() => false);
+    if (!ready) {
+      console.log('ℹ️ [ReelPass API] Redis not immediately ready during bootstrap; continuing with async background connection.');
+    }
+  }
+
   startWorker();
 
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : env.PORT;
@@ -57,6 +66,7 @@ async function bootstrap() {
     if (sweeper) clearInterval(sweeper);
     server.close(async () => {
       await closeDbPool().catch(() => undefined);
+      await cache.close().catch(() => undefined);
       console.log('✅ Server stopped.');
       process.exit(0);
     });

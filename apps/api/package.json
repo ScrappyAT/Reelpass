@@ -14,6 +14,7 @@
     "db:setup:prod": "node dist/db/setup.js",
     "db:migrate": "node scripts/db-migrate.js",
     "db:migrate:prod": "node dist/db/migrateCli.js",
+    "redis:verify": "tsx scripts/verify-redis.ts",
     "seed": "node scripts/db-setup.js"
   },
   "dependencies": {

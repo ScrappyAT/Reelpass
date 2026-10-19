@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { env } from '../config/env';
+import { cache } from './client';
 
 /**
  * Redis-backed temporary seat holds.
@@ -59,62 +59,22 @@ return released
 `;
 
 class SeatHoldService {
-  private redis: Redis | null = null;
-  private connected = false;
-  private initialized = false;
-
-  private init(): void {
-    if (this.initialized) return;
-    this.initialized = true;
-
-    const url = env.REDIS_URL || 'redis://localhost:6379';
-    const isTls = url.startsWith('rediss://') || process.env.REDIS_TLS === 'true';
-    try {
-      this.redis = new Redis(url, {
-        maxRetriesPerRequest: 1,
-        connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 5000),
-        lazyConnect: true,
-        ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
-        retryStrategy: (times) => (times > 3 ? null : Math.min(times * 500, 2000)),
-      });
-
-      this.redis
-        .connect()
-        .then(() => {
-          this.connected = true;
-          console.log('✅ [SeatHolds] Redis seat-hold store connected.');
-        })
-        .catch((err) => {
-          this.connected = false;
-          console.log(
-            `ℹ️ [SeatHolds] Redis unavailable (${err.message}). Seat holds will use PostgreSQL row locks only.`
-          );
-        });
-
-      this.redis.on('error', () => {
-        this.connected = false;
-      });
-      this.redis.on('ready', () => {
-        this.connected = true;
-      });
-    } catch {
-      this.connected = false;
-      console.log('ℹ️ [SeatHolds] Redis init failed. Seat holds will use PostgreSQL row locks only.');
-    }
+  isLive(): boolean {
+    return cache.isLive() && cache.getRedisClient() !== null;
   }
 
-  isLive(): boolean {
-    this.init();
-    return this.connected && this.redis !== null;
+  private getClient(): Redis | null {
+    if (!cache.isLive()) return null;
+    return cache.getRedisClient();
   }
 
   /** Atomically hold all seats or none. */
   async hold(showtimeId: string, seatIds: string[], userId: string, ttlSeconds: number): Promise<HoldResult> {
-    this.init();
-    if (!this.redis) return { ok: false, conflicts: [] };
+    const redis = this.getClient();
+    if (!redis) return { ok: false, conflicts: [] };
 
     const keys = seatIds.map((s) => holdKey(showtimeId, s));
-    const raw = (await this.redis.eval(
+    const raw = (await redis.eval(
       ACQUIRE_LUA,
       keys.length,
       ...keys,
@@ -132,32 +92,28 @@ class SeatHoldService {
 
   /** Release seats owned by this user (no-op for seats held by others). */
   async release(showtimeId: string, seatIds: string[], userId: string): Promise<number> {
-    this.init();
-    if (!this.redis) return 0;
+    const redis = this.getClient();
+    if (!redis) return 0;
     const keys = seatIds.map((s) => holdKey(showtimeId, s));
-    return (await this.redis.eval(RELEASE_LUA, keys.length, ...keys, userId)) as number;
+    return (await redis.eval(RELEASE_LUA, keys.length, ...keys, userId)) as number;
   }
 
   /** The user id currently holding a seat, or null. */
   async holder(showtimeId: string, seatId: string): Promise<string | null> {
-    this.init();
-    if (!this.redis) return null;
-    return this.redis.get(holdKey(showtimeId, seatId));
+    const redis = this.getClient();
+    if (!redis) return null;
+    return redis.get(holdKey(showtimeId, seatId));
   }
 
   /** Clear all hold keys for a set of seats (used when a booking is confirmed). */
   async clear(showtimeId: string, seatIds: string[]): Promise<void> {
-    this.init();
-    if (!this.redis || seatIds.length === 0) return;
-    await this.redis.del(...seatIds.map((s) => holdKey(showtimeId, s)));
+    const redis = this.getClient();
+    if (!redis || seatIds.length === 0) return;
+    await redis.del(...seatIds.map((s) => holdKey(showtimeId, s)));
   }
 
   async close(): Promise<void> {
-    if (this.redis) {
-      await this.redis.quit().catch(() => undefined);
-      this.redis = null;
-      this.connected = false;
-    }
+    await cache.close();
   }
 }
 

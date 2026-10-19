@@ -35,10 +35,15 @@ const envSchema = z.object({
   REDIS_URL: z
     .string()
     .trim()
-    .min(1)
     .optional()
     .or(z.literal(''))
-    .transform((val) => (val ? val : undefined)),
+    .transform((val) => {
+      if (!val) return undefined;
+      const unquoted = val.trim().replace(/^["']|["']$/g, '').trim();
+      return unquoted || undefined;
+    }),
+  REDIS_TLS: z.enum(['true', 'false', 'auto']).default('auto'),
+  REDIS_FAMILY: z.coerce.number().optional(),
   SEAT_HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(300),
 
   // JWT
