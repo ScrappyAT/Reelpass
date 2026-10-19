@@ -47,8 +47,8 @@ export function getDbPool(): Pool | null {
       max: Number(process.env.PG_POOL_MAX ?? (isRemote ? 20 : 100)),
       // Never let a single statement hang a pooled connection forever. Must exceed
       // the worst-case FOR UPDATE lock wait under contention.
-      statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 30000),
-      query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS ?? 30000),
+      statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 60000),
+      query_timeout: Number(process.env.PG_QUERY_TIMEOUT_MS ?? 60000),
     };
 
     pool = new Pool(poolConfig);

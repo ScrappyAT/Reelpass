@@ -53,6 +53,21 @@ app.get(['/health', `${env.API_PREFIX}/health`], async (req, res) => {
         const uRes = await p.query('SELECT COUNT(*)::int AS c FROM users');
         const sRes = await p.query('SELECT COUNT(*)::int AS c FROM showtimes');
         dbTables = { cinemas: cRes.rows[0].c, users: uRes.rows[0].c, showtimes: sRes.rows[0].c };
+
+        // If tables exist but have 0 rows (e.g. initial deployment before seed completed), trigger seed!
+        if (dbTables.cinemas === 0 || dbTables.showtimes === 0) {
+          try {
+            const { seedPgDatabase } = await import('./db/seedPg');
+            await seedPgDatabase();
+            autoMigrated = true;
+            const cRes2 = await p.query('SELECT COUNT(*)::int AS c FROM cinemas');
+            const uRes2 = await p.query('SELECT COUNT(*)::int AS c FROM users');
+            const sRes2 = await p.query('SELECT COUNT(*)::int AS c FROM showtimes');
+            dbTables = { cinemas: cRes2.rows[0].c, users: uRes2.rows[0].c, showtimes: sRes2.rows[0].c };
+          } catch (seedErr: any) {
+            dbError = `Seed check failed: ${seedErr.message}`;
+          }
+        }
       }
     } catch (err: any) {
       dbError = err.message;
@@ -82,7 +97,7 @@ app.get(['/health', `${env.API_PREFIX}/health`], async (req, res) => {
   res.json({
     status: 'ok',
     system: 'ReelPass Cinema API',
-    version: '2.0.2',
+    version: '2.0.3',
     mode: env.NODE_ENV,
     dataMode: mode === 'postgres' ? 'PostgreSQL' : 'In-Memory Demo',
     requestId: req.id,
