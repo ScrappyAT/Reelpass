@@ -20,11 +20,22 @@ export async function runMigrations(pool: Pool = getDbPool() as Pool): Promise<n
 
   let migrationsDir = path.join(__dirname, 'migrations');
   if (!fs.existsSync(migrationsDir)) {
-    const fallbackDir = path.resolve(__dirname, '../../src/db/migrations');
-    if (fs.existsSync(fallbackDir)) {
-      migrationsDir = fallbackDir;
-    } else {
-      throw new Error(`[migrate] migrations directory not found: ${migrationsDir}`);
+    const candidateDirs = [
+      path.resolve(__dirname, '../../src/db/migrations'),
+      path.resolve(__dirname, '../db/migrations'),
+      path.resolve(process.cwd(), 'src/db/migrations'),
+      path.resolve(process.cwd(), 'dist/db/migrations'),
+      path.resolve(process.cwd(), 'apps/api/src/db/migrations'),
+      path.resolve(process.cwd(), 'apps/api/dist/db/migrations'),
+    ];
+    for (const cand of candidateDirs) {
+      if (fs.existsSync(cand)) {
+        migrationsDir = cand;
+        break;
+      }
+    }
+    if (!fs.existsSync(migrationsDir)) {
+      throw new Error(`[migrate] migrations directory not found. Checked: ${candidateDirs.join(', ')}`);
     }
   }
 

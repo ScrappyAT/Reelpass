@@ -65,7 +65,7 @@ export function errorHandler(
   }
 
   // 3. Fallback Internal Server Error
-  console.error(`💥 [Error] Request ${requestId} failed:`, err);
+  console.error(`💥 [Error] Request ${requestId} [${req.method} ${req.originalUrl}] failed:`, err);
   const response: ApiResponse = {
     success: false,
     error: {

@@ -311,47 +311,51 @@ export class MemoryStore {
     const times = ['13:30', '16:45', '19:30', '22:15'];
     let showtimeCounter = 1;
 
-    moviesList.slice(0, 4).forEach((movie) => {
+    moviesList.forEach((movie) => {
       cinemasList.forEach((cinema) => {
         const audIds = cinemaAuditoriums.get(cinema.id) || [];
         if (audIds.length === 0) return;
 
-        times.forEach((timeStr, idx) => {
-          const [hours, mins] = timeStr.split(':').map(Number);
-          const start = new Date(today);
-          start.setHours(hours, mins, 0, 0);
+        // Generate showtimes for today and tomorrow
+        [0, 1].forEach((dayOffset) => {
+          times.forEach((timeStr, idx) => {
+            const [hours, mins] = timeStr.split(':').map(Number);
+            const start = new Date(today);
+            start.setDate(today.getDate() + dayOffset);
+            start.setHours(hours, mins, 0, 0);
 
-          const end = new Date(start);
-          end.setMinutes(end.getMinutes() + movie.runtimeMinutes + 20);
+            const end = new Date(start);
+            end.setMinutes(end.getMinutes() + movie.runtimeMinutes + 20);
 
-          const audId = audIds[idx % audIds.length];
-          const aud = this.auditoriums.get(audId)!;
+            const audId = audIds[idx % audIds.length];
+            const aud = this.auditoriums.get(audId)!;
 
-          const showtimeId = `st-${showtimeCounter++}`;
-          const isImax = aud.screenType === 'imax';
-          const isVipScreen = aud.screenType === 'vip';
+            const showtimeId = `st-${showtimeCounter++}`;
+            const isImax = aud.screenType === 'imax';
+            const isVipScreen = aud.screenType === 'vip';
 
-          const showtime: Showtime = {
-            id: showtimeId,
-            movieId: movie.id,
-            cinemaId: cinema.id,
-            auditoriumId: aud.id,
-            movieTitle: movie.title,
-            moviePosterUrl: movie.posterUrl,
-            cinemaName: cinema.name,
-            cinemaCity: cinema.city,
-            cinemaNeighborhood: cinema.neighborhood,
-            auditoriumName: aud.name,
-            startTime: start.toISOString(),
-            endTime: end.toISOString(),
-            format: isImax ? 'IMAX 2D' : isVipScreen ? 'VIP Experience' : aud.screenType === 'dolby' ? 'Dolby Cinema' : '2D',
-            priceStandard: isImax ? PRICE_KOBO.imaxStandard : PRICE_KOBO.standard,
-            priceVip: isImax ? PRICE_KOBO.imaxVip : PRICE_KOBO.vip,
-            availableSeatsCount: 290,
-            totalSeatsCount: 320,
-          };
+            const showtime: Showtime = {
+              id: showtimeId,
+              movieId: movie.id,
+              cinemaId: cinema.id,
+              auditoriumId: aud.id,
+              movieTitle: movie.title,
+              moviePosterUrl: movie.posterUrl,
+              cinemaName: cinema.name,
+              cinemaCity: cinema.city,
+              cinemaNeighborhood: cinema.neighborhood,
+              auditoriumName: aud.name,
+              startTime: start.toISOString(),
+              endTime: end.toISOString(),
+              format: isImax ? 'IMAX 2D' : isVipScreen ? 'VIP Experience' : aud.screenType === 'dolby' ? 'Dolby Cinema' : '2D',
+              priceStandard: isImax ? PRICE_KOBO.imaxStandard : PRICE_KOBO.standard,
+              priceVip: isImax ? PRICE_KOBO.imaxVip : PRICE_KOBO.vip,
+              availableSeatsCount: 290,
+              totalSeatsCount: 320,
+            };
 
-          this.showtimes.set(showtime.id, showtime);
+            this.showtimes.set(showtime.id, showtime);
+          });
         });
       });
     });

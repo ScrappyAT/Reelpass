@@ -95,7 +95,24 @@ router.post('/login', async (req, res, next) => {
 router.post('/demo-login', async (req, res, next) => {
   try {
     const store = getStore();
-    const demoUser = await store.findUserById('u-1001-demo-user-id');
+    let demoUser = await store.findUserById('u-1001-demo-user-id');
+    if (!demoUser) {
+      try {
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash('password123', salt);
+        demoUser = await store.createUser({
+          id: 'u-1001-demo-user-id',
+          email: 'demo@reelpass.app',
+          fullName: 'Alex Vance',
+          phoneNumber: '+234 803 000 0000',
+          passwordHash,
+          role: 'customer',
+        });
+      } catch {
+        demoUser = await store.findUserById('u-1001-demo-user-id');
+      }
+    }
+
     if (!demoUser) {
       throw new AppError(500, 'DEMO_USER_MISSING', 'Demo account configuration error');
     }

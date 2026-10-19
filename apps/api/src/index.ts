@@ -3,6 +3,7 @@ import { env } from './config/env';
 import { resolveDataMode, isPostgresRequired } from './config/dataMode';
 import { checkDatabaseConnection, getDbPool, closeDbPool } from './db/pool';
 import { runMigrations } from './db/migrate';
+import { seedPgDatabase } from './db/seedPg';
 import { getPgStore } from './db/store';
 import { startWorker } from './queue';
 import { cache } from './redis/client';
@@ -19,9 +20,22 @@ async function bootstrap() {
     // Fail loudly if PostgreSQL is configured but unreachable. Never fall back.
     await checkDatabaseConnection(true);
 
-    if (process.env.AUTO_MIGRATE === 'true') {
-      console.log('🔄 [ReelPass API] AUTO_MIGRATE=true: checking for pending migrations...');
-      await runMigrations();
+    if (process.env.AUTO_MIGRATE !== 'false') {
+      console.log('🔄 [ReelPass API] Ensuring PostgreSQL database schema is migrated...');
+      try {
+        await runMigrations();
+      } catch (err: any) {
+        console.error('💥 [ReelPass API] Migration error:', err.message || err);
+        throw err;
+      }
+
+      console.log('🌱 [ReelPass API] Ensuring initial demo catalog is present...');
+      try {
+        await seedPgDatabase();
+      } catch (err: any) {
+        console.error('💥 [ReelPass API] Seed error:', err.message || err);
+        throw err;
+      }
     }
 
     // Background sweep: release seats from expired pending bookings.

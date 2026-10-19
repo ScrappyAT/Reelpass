@@ -19,7 +19,72 @@ export async function seedPgDatabase(): Promise<void> {
   try {
     const existing = await client.query('SELECT COUNT(*)::int AS c FROM cinemas');
     if (existing.rows[0].c > 0) {
-      console.log('ℹ️ [seed] Database already seeded. Skipping.');
+      console.log('ℹ️ [seed] Cinemas already present in database. Verifying demo user and showtimes...');
+      // Ensure the demo user is present even in an already-seeded database
+      const demoUser = memoryStore.users.get('u-1001-demo-user-id');
+      if (demoUser) {
+        const passwordHash = demoUser.passwordHash || bcrypt.hashSync('password123', 10);
+        await client.query(
+          `INSERT INTO users (id, email, password_hash, full_name, phone_number, role)
+           VALUES ($1, LOWER($2), $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+          [demoUser.id, demoUser.email, passwordHash, demoUser.fullName, demoUser.phoneNumber ?? null, demoUser.role]
+        );
+      }
+
+      // Check if movies are missing
+      const moviesCount = await client.query('SELECT COUNT(*)::int AS c FROM movies');
+      if (moviesCount.rows[0].c === 0) {
+        console.log('🌱 [seed] Populating missing movie catalog...');
+        for (const m of memoryStore.movies.values()) {
+          await client.query(
+            `INSERT INTO movies (id, tmdb_id, title, tagline, overview, poster_url, backdrop_url,
+                                 release_date, runtime_minutes, genres, rating, vote_count,
+                                 certification, trailer_url, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)
+             ON CONFLICT (id) DO NOTHING`,
+            [
+              m.id, m.tmdbId, m.title, m.tagline ?? null, m.overview, m.posterUrl, m.backdropUrl,
+              m.releaseDate, m.runtimeMinutes, JSON.stringify(m.genres), m.rating, m.voteCount,
+              m.certification, m.trailerUrl ?? null, m.status,
+            ]
+          );
+        }
+      }
+
+      // Check if showtimes are missing
+      const showtimesCount = await client.query('SELECT COUNT(*)::int AS c FROM showtimes');
+      if (showtimesCount.rows[0].c === 0) {
+        console.log('🌱 [seed] Populating missing showtimes...');
+        for (const st of memoryStore.showtimes.values()) {
+          const aud = memoryStore.auditoriums.get(st.auditoriumId);
+          if (!aud) continue;
+          const isImax = aud.screenType === 'imax';
+          const priceStandard = isImax ? PRICE_KOBO.imaxStandard : PRICE_KOBO.standard;
+          const priceVip = isImax ? PRICE_KOBO.imaxVip : PRICE_KOBO.vip;
+
+          await client.query(
+            `INSERT INTO showtimes (id, movie_id, cinema_id, auditorium_id, start_time, end_time, format,
+                                    price_standard_kobo, price_vip_kobo)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             ON CONFLICT (id) DO NOTHING`,
+            [st.id, st.movieId, st.cinemaId, st.auditoriumId, st.startTime, st.endTime, st.format, priceStandard, priceVip]
+          );
+
+          const seats = memoryStore.getSeats(st.auditoriumId);
+          const showtimeIds = seats.map(() => st.id);
+          const seatIds = seats.map((s) => s.id);
+          const statuses = seats.map((s) => (s.status === 'sold' ? 'SOLD' : 'AVAILABLE'));
+          const prices = seats.map((s) => (s.type === 'vip' ? priceVip : priceStandard));
+
+          await client.query(
+            `INSERT INTO showtime_seats (showtime_id, seat_id, status, price_kobo)
+             SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::int[])
+             ON CONFLICT (showtime_id, seat_id) DO NOTHING`,
+            [showtimeIds, seatIds, statuses, prices]
+          );
+        }
+      }
+
       return;
     }
 
