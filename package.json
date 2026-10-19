@@ -18,7 +18,8 @@
     "db:setup": "npm run db:setup --workspace=@matinee/api",
     "db:setup:prod": "npm run db:setup:prod --workspace=@matinee/api",
     "db:migrate": "npm run db:migrate --workspace=@matinee/api",
-    "redis:verify": "npm run redis:verify --workspace=@matinee/api"
+    "redis:verify": "npm run redis:verify --workspace=@matinee/api",
+    "eas-build-post-install": "npm run build:shared"
   },
   "dependencies": {
     "@types/node": "^22.10.2",
