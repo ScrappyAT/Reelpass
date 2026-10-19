@@ -71,6 +71,7 @@ export function errorHandler(
     error: {
       code: 'INTERNAL_SERVER_ERROR',
       message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred' : err.message,
+      details: err?.message ? { error: err.message, code: err.code } : undefined,
     },
     meta: {
       requestId,

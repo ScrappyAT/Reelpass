@@ -3,7 +3,7 @@ import cors from 'cors';
 import { env } from './config/env';
 import { requestIdMiddleware } from './middleware/requestId';
 import { errorHandler } from './middleware/errorHandler';
-import { isDbLive } from './db/pool';
+import { isDbLive, getDbPool } from './db/pool';
 import { cache } from './redis/client';
 import { TMDB_ATTRIBUTION } from './services/tmdb.service';
 
@@ -38,13 +38,51 @@ if (env.NODE_ENV !== 'production') {
 }
 
 // Health check endpoint (available at both root /health and API prefix /api/v1/health)
-app.get(['/health', `${env.API_PREFIX}/health`], (req, res) => {
+app.get(['/health', `${env.API_PREFIX}/health`], async (req, res) => {
   const hasTmdbKey = Boolean(env.TMDB_API_KEY && !env.TMDB_API_KEY.includes('your_tmdb_api_key'));
   const mode = resolveDataMode();
+  let dbTables: { cinemas?: number; users?: number; showtimes?: number } | null = null;
+  let dbError: string | null = null;
+  let autoMigrated = false;
+
+  if (mode === 'postgres' && isDbLive()) {
+    try {
+      const p = getDbPool();
+      if (p) {
+        const cRes = await p.query('SELECT COUNT(*)::int AS c FROM cinemas');
+        const uRes = await p.query('SELECT COUNT(*)::int AS c FROM users');
+        const sRes = await p.query('SELECT COUNT(*)::int AS c FROM showtimes');
+        dbTables = { cinemas: cRes.rows[0].c, users: uRes.rows[0].c, showtimes: sRes.rows[0].c };
+      }
+    } catch (err: any) {
+      dbError = err.message;
+      // If tables are missing, auto-run safe migrations and seed check on demand
+      if (err.message && (err.message.includes('does not exist') || err.message.includes('relation'))) {
+        try {
+          const { runMigrations } = await import('./db/migrate');
+          const { seedPgDatabase } = await import('./db/seedPg');
+          await runMigrations();
+          await seedPgDatabase();
+          autoMigrated = true;
+          const p = getDbPool();
+          if (p) {
+            const cRes = await p.query('SELECT COUNT(*)::int AS c FROM cinemas');
+            const uRes = await p.query('SELECT COUNT(*)::int AS c FROM users');
+            const sRes = await p.query('SELECT COUNT(*)::int AS c FROM showtimes');
+            dbTables = { cinemas: cRes.rows[0].c, users: uRes.rows[0].c, showtimes: sRes.rows[0].c };
+            dbError = null;
+          }
+        } catch (initErr: any) {
+          dbError = `Auto-migrate failed: ${initErr.message}`;
+        }
+      }
+    }
+  }
+
   res.json({
     status: 'ok',
     system: 'ReelPass Cinema API',
-    version: '2.0.0',
+    version: '2.0.2',
     mode: env.NODE_ENV,
     dataMode: mode === 'postgres' ? 'PostgreSQL' : 'In-Memory Demo',
     requestId: req.id,
@@ -56,12 +94,27 @@ app.get(['/health', `${env.API_PREFIX}/health`], (req, res) => {
             ? 'PostgreSQL (live)'
             : 'PostgreSQL (configured but not connected)'
           : 'In-Memory Resilient Demo Store',
+      dbTables,
+      dbError,
+      autoMigrated,
       cache: cache.isLive() ? 'Redis (live)' : 'In-Memory TTL Cache Fallback',
       redis: cache.getDiagnosticInfo(),
       tmdb: hasTmdbKey ? 'TMDB v3 API (live)' : 'Rich Demo Movie Catalog',
     },
     attribution: TMDB_ATTRIBUTION,
   });
+});
+
+app.post(['/health/init', `${env.API_PREFIX}/health/init`], async (req, res) => {
+  try {
+    const { runMigrations } = await import('./db/migrate');
+    const { seedPgDatabase } = await import('./db/seedPg');
+    const applied = await runMigrations();
+    await seedPgDatabase();
+    return res.json({ success: true, applied, message: 'Database migrations and seed completed' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message, stack: err.stack });
+  }
 });
 
 // Mount Routes
