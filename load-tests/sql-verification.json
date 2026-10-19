@@ -1,0 +1,11 @@
+{
+    "totalBookings":  40,
+    "showtimeId":  "st-1",
+    "duplicateSeats":  0,
+    "heldSeats":  40,
+    "duplicateTickets":  0,
+    "passed":  true,
+    "zeroDoubleBookings":  true,
+    "timestamp":  "2026-10-19T12:23:25.3755394+01:00",
+    "poolSize":  40
+}

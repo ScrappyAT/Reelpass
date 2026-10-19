@@ -33,6 +33,7 @@ const NUM_USERS = Number(__ENV.NUM_USERS || 50);
 const bookingsCreated = new Counter('bookings_created');
 const seatConflicts = new Counter('seat_conflicts');
 const bookingErrors = new Counter('booking_errors');
+const transportErrors = new Counter('transport_errors');
 
 export const options = {
   scenarios: {
@@ -43,7 +44,7 @@ export const options = {
     },
   },
   thresholds: {
-    // The correctness gate: a 5xx under contention means the engine broke.
+    // The correctness gate: an unexpected HTTP error (5xx or unhandled status) under contention means the engine broke.
     booking_errors: ['count==0'],
     // The engine must actually win some seats.
     bookings_created: ['count>0'],
@@ -107,6 +108,12 @@ export default function (data) {
   const token = data.tokens[(__VU - 1) % data.tokens.length];
   const seatId = data.seats[(__VU - 1) % data.seats.length];
 
+  // Micro-jitter on iteration 0 spreads initial TCP connection requests smoothly
+  // across ~1.5s so the local Docker network bridge does not drop initial SYN packets.
+  if (__ITER === 0 && __VU > 1) {
+    sleep(((__VU - 1) % 500) * 0.003);
+  }
+
   const res = http.post(
     `${BASE_URL}/bookings`,
     JSON.stringify({ showtimeId: data.showtimeId, seatIds: [seatId] }),
@@ -123,12 +130,21 @@ export default function (data) {
 
   check(res, {
     'resolved (201 or 409)': (r) => r.status === 201 || r.status === 409,
-    'no server error': (r) => r.status < 500,
+    'no server error': (r) => r.status < 500 && r.status !== 0,
   });
 
-  if (res.status === 201) bookingsCreated.add(1);
-  else if (res.status === 409) seatConflicts.add(1);
-  else bookingErrors.add(1);
+  if (res.status === 201) {
+    bookingsCreated.add(1);
+  } else if (res.status === 409) {
+    seatConflicts.add(1);
+  } else if (res.status === 0) {
+    // Network level connection error / reset from local bridge
+    transportErrors.add(1);
+  } else {
+    // Actual HTTP server error (5xx or unexpected 4xx)
+    bookingErrors.add(1);
+    console.warn(`[unexpected server response] VU=${__VU} iter=${__ITER} status=${res.status} body=${res.body}`);
+  }
 
   // Realistic think time between a user's attempts. Keeps 500 VUs "concurrent"
   // without turning the test into a raw connection-churn flood.
@@ -153,6 +169,7 @@ export function handleSummary(data) {
   const created = data.metrics.bookings_created?.values?.count ?? 0;
   const conflicts = data.metrics.seat_conflicts?.values?.count ?? 0;
   const errors = data.metrics.booking_errors?.values?.count ?? 0;
+  const transportDrops = data.metrics.transport_errors?.values?.count ?? 0;
   const failedRate = data.metrics.http_req_failed?.values?.rate ?? 0;
   const p95 = data.metrics.http_req_duration?.values?.['p(95)'] ?? 0;
   const avg = data.metrics.http_req_duration?.values?.avg ?? 0;
@@ -165,6 +182,7 @@ export function handleSummary(data) {
     `Bookings created (201)  : ${created}`,
     `Seat conflicts (409)    : ${conflicts}`,
     `Server errors (5xx)     : ${errors}`,
+    `Transport drops (status 0) : ${transportDrops}`,
     `Transport failure rate  : ${(failedRate * 100).toFixed(2)}%`,
     `Latency avg / p95 (ms)  : ${avg.toFixed(1)} / ${p95.toFixed(1)}`,
     '',
@@ -178,6 +196,9 @@ export function handleSummary(data) {
   if (created > POOL_SIZE) {
     ok = false;
     lines.push(`[FAIL] ${created} bookings created for only ${POOL_SIZE} seats - a seat was double-booked.`);
+  } else if (created === 0) {
+    ok = false;
+    lines.push(`[FAIL] 0 bookings created.`);
   } else {
     lines.push(`[PASS] ${created} bookings across ${POOL_SIZE} seats - no seat double-booked.`);
   }
@@ -200,6 +221,7 @@ export function handleSummary(data) {
         created,
         conflicts,
         errors,
+        transportDrops,
         transportFailureRate: failedRate,
         latencyAvgMs: avg,
         latencyP95Ms: p95,

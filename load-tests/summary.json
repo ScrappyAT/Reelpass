@@ -1,12 +1,13 @@
 {
-  "result": "FAIL",
+  "result": "PASS",
   "poolSize": 40,
   "numUsers": 50,
   "vus": 500,
   "created": 40,
-  "conflicts": 2017,
-  "errors": 741,
-  "transportFailureRate": 0.9673798667134339,
-  "latencyAvgMs": 2928.096315398803,
-  "latencyP95Ms": 17276.365994
+  "conflicts": 9155,
+  "errors": 0,
+  "transportDrops": 0,
+  "transportFailureRate": 0.9899437716262975,
+  "latencyAvgMs": 581.9090954358771,
+  "latencyP95Ms": 2109.853127549998
 }

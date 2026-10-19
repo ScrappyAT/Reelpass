@@ -49,10 +49,11 @@ async function bootstrap() {
   startWorker();
 
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : env.PORT;
-  const server = app.listen(port, '0.0.0.0', () => {
+  const server = app.listen(port, '0.0.0.0', 2048, () => {
     console.log(`🚀 [ReelPass API] Server listening on 0.0.0.0:${port}${env.API_PREFIX}`);
     console.log(`📡 [Health Check] Available at http://0.0.0.0:${port}${env.API_PREFIX}/health`);
   });
+  server.maxConnections = 10000;
 
   // Keep-alive tuning: under sustained load, connections can sit idle between a
   // client's requests. Node's default 5s keep-alive timeout would close them and

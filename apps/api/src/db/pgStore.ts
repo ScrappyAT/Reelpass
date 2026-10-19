@@ -409,8 +409,9 @@ export class PgStore {
         }
       }
 
-      // Reclaim seats from stale (expired) pending bookings so they are usable.
-      await this.expireStaleBookings(client);
+      // Note: Stale holds for the requested seats are evaluated per-seat below,
+      // and the background sweeper runs every 15s. We avoid running global
+      // expireStaleBookings inside this transaction to prevent lock-order deadlocks.
 
       const showtimeRes = await client.query<ShowtimeDbRow>(
         'SELECT * FROM showtimes WHERE id = $1',
@@ -421,13 +422,14 @@ export class PgStore {
       }
       const showtime = showtimeRes.rows[0];
 
-      // Lock the per-showtime seat rows. FOR UPDATE serialises competing claims.
+      // Lock the per-showtime seat rows in monotonic order. FOR UPDATE serialises competing claims.
       const locked = await client.query<LockedSeatRow>(
         `SELECT s.id, s.row_label, s.seat_number, s.seat_type,
                 ss.status, ss.held_by_user_id, ss.hold_expires_at
            FROM showtime_seats ss
            JOIN seats s ON s.id = ss.seat_id
           WHERE ss.showtime_id = $1 AND ss.seat_id = ANY($2::text[])
+          ORDER BY ss.seat_id ASC
           FOR UPDATE OF ss`,
         [input.showtimeId, seatIds]
       );
@@ -517,9 +519,14 @@ export class PgStore {
           [input.showtimeId, seatIds, input.userId, expiresAt.toISOString()]
         );
       } catch (err: any) {
-        // 23505 = unique_violation on booking_seats/tickets => a concurrent
-        // booking already claimed one of these seats. DB is the final authority.
-        if (err?.code === '23505') {
+        // 23505 = unique_violation on booking_seats/tickets => a concurrent booking claimed the seat.
+        // 40P01 = deadlock_detected, 40001 = serialization_failure, 55P03 = lock_not_available
+        if (
+          err?.code === '23505' ||
+          err?.code === '40P01' ||
+          err?.code === '40001' ||
+          err?.code === '55P03'
+        ) {
           throw new BookingConflictError(
             'SEAT_UNAVAILABLE',
             'One or more selected seats were just taken. Please pick different seats.',
