@@ -58,6 +58,19 @@ test('parseRedisConfig automatically enables TLS and SNI when host is upstash.io
   assert.equal((config.options.tls as any)?.servername, 'us1-fancy-bear-12345.upstash.io');
 });
 
+test('parseRedisConfig handles unencoded special characters in password and redis-cli prefix', () => {
+  const cliInput = 'redis-cli -u rediss://default:p#ssword?foo=bar@us1-fancy-bear-12345.upstash.io:6379';
+  const config = parseRedisConfig(cliInput);
+
+  assert.ok(config);
+  assert.equal(config.hostname, 'us1-fancy-bear-12345.upstash.io');
+  assert.equal(config.port, 6379);
+  assert.equal(config.options.password, 'p#ssword?foo=bar');
+  assert.equal(config.options.username, 'default');
+  assert.equal(config.isTls, true);
+  assert.equal(config.sanitizedHost, 'us1-fancy-bear-12345.upstash.io:6379');
+});
+
 test('parseRedisConfig detects Upstash HTTPS REST URL and returns helpful guidance', () => {
   const restUrl = 'https://us1-fancy-bear-12345.upstash.io';
   const config = parseRedisConfig(restUrl);

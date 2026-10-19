@@ -26,7 +26,7 @@ async function verify() {
   console.log(`🔒 TLS: ${config.isTls ? 'Enabled (SNI: ' + config.hostname + ')' : 'Disabled'}`);
   console.log('⏳ Connecting to Redis...');
 
-  const client = new Redis(config.url, {
+  const client = new Redis({
     ...config.options,
     lazyConnect: true,
   });

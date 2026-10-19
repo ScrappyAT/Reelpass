@@ -2,7 +2,7 @@ import { RedisOptions } from 'ioredis';
 import type Redis from 'ioredis';
 
 export interface ParsedRedisConfig {
-  url: string;
+  scheme: string;
   isTls: boolean;
   hostname: string;
   port: number;
@@ -12,16 +12,14 @@ export interface ParsedRedisConfig {
 }
 
 /**
- * Strips credentials (username and password) from a Redis connection URL so
+ * Strips credentials (username and password) from a Redis connection string so
  * it can be logged or returned in health checks without leaking secrets.
  */
 export function getSanitizedRedisHost(rawUrl?: string): string {
   if (!rawUrl) return 'unconfigured';
   try {
-    const cleaned = rawUrl.trim().replace(/^["']|["']$/g, '');
-    const u = new URL(cleaned);
-    const port = u.port || (u.protocol === 'rediss:' ? '6379' : '6379');
-    return `${u.hostname}:${port}`;
+    const config = parseRedisConfig(rawUrl);
+    return config?.sanitizedHost || 'invalid-url-format';
   } catch {
     return 'invalid-url-format';
   }
@@ -29,76 +27,120 @@ export function getSanitizedRedisHost(rawUrl?: string): string {
 
 /**
  * Validates, normalizes, and builds robust connection options for Redis / Upstash.
+ * Custom parser avoids node URL parser failures on passwords with special characters
+ * and cleans up common copy-paste artifacts (such as quotes, redis-cli prefixes, etc.).
  */
-export function parseRedisConfig(rawUrl?: string): ParsedRedisConfig | null {
-  if (!rawUrl) return null;
+export function parseRedisConfig(raw?: string): ParsedRedisConfig | null {
+  if (!raw) return null;
+  let str = raw.trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
+  if (!str) return null;
 
-  const cleaned = rawUrl.trim().replace(/^["']|["']$/g, '').trim();
-  if (!cleaned) return null;
+  // Strip common CLI / environment variable prefixes from copy-paste
+  if (str.startsWith('export ')) str = str.slice(7).trim();
+  if (str.startsWith('REDIS_URL=')) {
+    str = str.slice(10).trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
+  }
+  const cliMatch = str.match(/redis-cli(?:\s+--tls)?\s+-u\s+(\S+)/i);
+  if (cliMatch) {
+    str = cliMatch[1].trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim();
+  }
 
   // Detect Upstash REST API URL misconfiguration
-  if (cleaned.startsWith('https://') || cleaned.startsWith('http://')) {
+  if (str.startsWith('https://') || str.startsWith('http://')) {
     const errorMsg =
       'REDIS_URL is configured as an HTTP(S) URL. Upstash provides both a REST API URL (https://) ' +
       'and a standard Redis TCP URL (rediss://). Please update REDIS_URL in Railway to use the standard ' +
       'TCP connection string: rediss://default:<password>@<host>:6379';
     return {
-      url: cleaned,
+      scheme: 'http:',
       isTls: false,
       hostname: 'invalid-http-url',
       port: 0,
-      sanitizedHost: getSanitizedRedisHost(cleaned),
+      sanitizedHost: 'invalid-http-url',
       options: {},
       error: errorMsg,
     };
   }
 
-  // Ensure scheme is present (default to rediss:// if host includes upstash.io, otherwise redis://)
-  let normalizedUrl = cleaned;
-  if (!normalizedUrl.includes('://')) {
-    if (normalizedUrl.includes('upstash.io')) {
-      normalizedUrl = `rediss://${normalizedUrl}`;
+  // Find scheme if present
+  let scheme = 'redis:';
+  let rest = str;
+  if (str.includes('://')) {
+    const parts = str.split('://');
+    scheme = parts[0].toLowerCase() + ':';
+    rest = parts.slice(1).join('://');
+  } else if (str.toLowerCase().includes('upstash.io')) {
+    scheme = 'rediss:';
+  }
+
+  // Extract auth (username:password) and host:port
+  let username: string | undefined;
+  let password: string | undefined;
+  let hostPort = rest;
+
+  const atIndex = rest.lastIndexOf('@');
+  if (atIndex !== -1) {
+    const authPart = rest.slice(0, atIndex);
+    hostPort = rest.slice(atIndex + 1);
+
+    const colonIndex = authPart.indexOf(':');
+    if (colonIndex !== -1) {
+      username = authPart.slice(0, colonIndex);
+      password = authPart.slice(colonIndex + 1);
     } else {
-      normalizedUrl = `redis://${normalizedUrl}`;
+      password = authPart;
+      username = 'default';
     }
   }
 
-  let parsed: URL;
-  try {
-    parsed = new URL(normalizedUrl);
-  } catch (err: any) {
+  // Remove any trailing path/database suffix (e.g. /0)
+  if (hostPort.includes('/')) {
+    hostPort = hostPort.split('/')[0];
+  }
+
+  // Extract host and port
+  let host = hostPort.trim();
+  let port = scheme === 'rediss:' ? 6379 : 6379;
+  const hostColon = hostPort.lastIndexOf(':');
+  if (hostColon !== -1) {
+    const possiblePort = parseInt(hostPort.slice(hostColon + 1), 10);
+    if (!isNaN(possiblePort)) {
+      host = hostPort.slice(0, hostColon).trim();
+      port = possiblePort;
+    }
+  }
+
+  // Validate hostname
+  if (!host || host.includes(' ') || (!host.includes('.') && host !== 'localhost')) {
     return {
-      url: cleaned,
+      scheme,
       isTls: false,
-      hostname: 'invalid-url',
+      hostname: 'invalid-host',
       port: 0,
-      sanitizedHost: 'invalid-url',
+      sanitizedHost: 'invalid-host',
       options: {},
-      error: `Failed to parse REDIS_URL: ${err.message}`,
+      error: `Invalid Redis host "${host}". Please verify your REDIS_URL format in Railway.`,
     };
   }
 
-  const hostname = parsed.hostname;
-  const port = parsed.port ? parseInt(parsed.port, 10) : 6379;
-  const sanitizedHost = `${hostname}:${port}`;
-
-  // TLS detection: rediss:// scheme, REDIS_TLS=true, or any upstash.io endpoint
   const forceTls = process.env.REDIS_TLS === 'true';
   const forceNoTls = process.env.REDIS_TLS === 'false';
-  const isUpstash = hostname.toLowerCase().includes('upstash.io');
-  const isTlsScheme = parsed.protocol === 'rediss:';
+  const isUpstash = host.toLowerCase().includes('upstash.io');
+  const isTlsScheme = scheme === 'rediss:';
   const isTls = !forceNoTls && (isTlsScheme || forceTls || isUpstash);
 
   const connectTimeoutMs = Number(process.env.REDIS_CONNECT_TIMEOUT_MS ?? 10000);
   const family = process.env.REDIS_FAMILY ? Number(process.env.REDIS_FAMILY) : 0;
 
   const options: RedisOptions = {
-    // maxRetriesPerRequest: null is required by BullMQ and prevents premature rejection on slow WAN links
+    host,
+    port,
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {}),
     maxRetriesPerRequest: null,
     connectTimeout: connectTimeoutMs,
     family,
     lazyConnect: true,
-    // Reconnect with exponential backoff up to 5s. Never return null to avoid permanent client shutdown.
     retryStrategy: (times: number) => Math.min(times * 500, 5000),
   };
 
@@ -106,17 +148,16 @@ export function parseRedisConfig(rawUrl?: string): ParsedRedisConfig | null {
     const rejectUnauthorized = process.env.REDIS_REJECT_UNAUTHORIZED === 'true';
     options.tls = {
       rejectUnauthorized,
-      // CRITICAL: SNI (Server Name Indication) servername is required for Upstash & multi-tenant cloud Redis
-      servername: hostname,
+      servername: host,
     };
   }
 
   return {
-    url: normalizedUrl,
+    scheme,
     isTls,
-    hostname,
+    hostname: host,
     port,
-    sanitizedHost,
+    sanitizedHost: `${host}:${port}`,
     options,
   };
 }

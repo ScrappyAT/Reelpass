@@ -63,7 +63,7 @@ class CacheService {
         `🔌 [Redis] Initializing connection to ${config.sanitizedHost} (TLS: ${config.isTls ? 'enabled' : 'disabled'})...`
       );
 
-      this.redis = new Redis(config.url, config.options);
+      this.redis = new Redis(config.options);
 
       this.redis.on('connect', () => {
         this.status = 'connecting';
