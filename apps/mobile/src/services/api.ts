@@ -7,6 +7,9 @@ import {
   User,
   ApiResponse,
   AuthResponse,
+  PaymentDetails,
+  PaymentInitResult,
+  PaymentVerifyResult,
 } from '@matinee/shared';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
@@ -465,6 +468,30 @@ class ApiClient {
 
   async getBookingById(id: string) {
     return this.request<Booking>(`/bookings/${id}`);
+  }
+
+  // --- Payment APIs ---
+  async initializePayment(bookingId: string, redirectUrl?: string) {
+    return this.request<PaymentInitResult>('/payments/initialize', {
+      method: 'POST',
+      body: JSON.stringify({ bookingId, redirectUrl }),
+    });
+  }
+
+  async verifyPayment(params: { bookingId?: string; reference?: string; transactionId?: string }) {
+    return this.request<PaymentVerifyResult>('/payments/verify', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async getPaymentStatus(bookingId: string) {
+    return this.request<{
+      booking: Booking;
+      payment: PaymentDetails | null;
+      isConfirmed: boolean;
+      reconciled?: boolean;
+    }>(`/payments/${bookingId}/status`);
   }
 }
 

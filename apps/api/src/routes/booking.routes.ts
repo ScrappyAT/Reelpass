@@ -187,6 +187,7 @@ router.post('/:id/confirm', requireAuth, async (req, res, next) => {
       await store.createPayment({
         id: `pay-${Date.now()}`,
         bookingId: booking.id,
+        userId: booking.userId,
         amountKobo: booking.totalAmount,
         reference,
         status: 'pending',

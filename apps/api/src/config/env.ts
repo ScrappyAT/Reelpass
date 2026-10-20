@@ -56,6 +56,9 @@ const envSchema = z.object({
   TMDB_IMAGE_BASE_URL: z.string().default('https://image.tmdb.org/t/p'),
 
   // Flutterwave (Phase 2 payment integration)
+  FLW_SECRET_KEY: z.string().optional(),
+  FLW_SECRET_HASH: z.string().optional(),
+  FLW_CURRENCY: z.string().default('NGN'),
   FLUTTERWAVE_PUBLIC_KEY: z.string().optional(),
   FLUTTERWAVE_SECRET_KEY: z.string().optional(),
   FLUTTERWAVE_WEBHOOK_SECRET_HASH: z.string().optional(),

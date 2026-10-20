@@ -30,14 +30,17 @@ export interface CreateBookingResult {
 export interface PaymentRecord {
   id: string;
   bookingId: string;
+  userId: string;
   amountKobo: number;
   currency: string;
   provider: string;
   reference: string;
   transactionId?: string;
-  status: 'pending' | 'successful' | 'failed';
+  status: 'pending' | 'successful' | 'failed' | 'cancelled';
   rawResponse?: unknown;
+  failureReason?: string;
   createdAt: string;
+  verifiedAt?: string;
 }
 
 export class BookingConflictError extends Error {
@@ -160,14 +163,17 @@ export interface TicketDbRow {
 export interface PaymentDbRow {
   id: string;
   booking_id: string;
+  user_id: string;
   amount_kobo: number | string;
   currency: string;
   provider: string;
   reference: string;
   transaction_id: string | null;
-  status: 'pending' | 'successful' | 'failed';
+  status: 'pending' | 'successful' | 'failed' | 'cancelled';
   raw_response: unknown;
+  failure_reason: string | null;
   created_at: Date | string;
+  verified_at: Date | string | null;
 }
 
 function mapSeatType(t: string): SeatType {
@@ -801,27 +807,34 @@ export class PgStore {
   async createPayment(input: {
     id: string;
     bookingId: string;
+    userId: string;
     amountKobo: number;
     currency?: string;
     provider?: string;
     reference: string;
-    status?: 'pending' | 'successful' | 'failed';
+    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
     transactionId?: string;
+    failureReason?: string;
   }): Promise<PaymentRecord> {
     const res = await this.pool.query<PaymentDbRow>(
-      `INSERT INTO payments (id, booking_id, amount_kobo, currency, provider, reference, transaction_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (reference) DO UPDATE SET booking_id = EXCLUDED.booking_id
+      `INSERT INTO payments (id, booking_id, user_id, amount_kobo, currency, provider, reference, transaction_id, status, failure_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (reference) DO UPDATE 
+          SET booking_id = EXCLUDED.booking_id,
+              user_id = EXCLUDED.user_id,
+              status = EXCLUDED.status
        RETURNING *`,
       [
         input.id,
         input.bookingId,
+        input.userId,
         input.amountKobo,
         input.currency ?? 'NGN',
         input.provider ?? 'flutterwave',
         input.reference,
         input.transactionId ?? null,
         input.status ?? 'pending',
+        input.failureReason ?? null,
       ]
     );
     return this.mapPayment(res.rows[0]);
@@ -833,22 +846,46 @@ export class PgStore {
   }
 
   async getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null> {
-    const res = await this.pool.query<PaymentDbRow>('SELECT * FROM payments WHERE booking_id = $1', [bookingId]);
+    const res = await this.pool.query<PaymentDbRow>(
+      'SELECT * FROM payments WHERE booking_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [bookingId]
+    );
+    return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
+  }
+
+  async getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null> {
+    const res = await this.pool.query<PaymentDbRow>(
+      'SELECT * FROM payments WHERE transaction_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [transactionId]
+    );
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }
 
   async updatePaymentStatus(
     reference: string,
-    status: 'pending' | 'successful' | 'failed',
+    status: 'pending' | 'successful' | 'failed' | 'cancelled',
     transactionId?: string,
-    rawResponse?: unknown
+    rawResponse?: unknown,
+    failureReason?: string,
+    verifiedAt?: Date
   ): Promise<PaymentRecord | null> {
     const res = await this.pool.query<PaymentDbRow>(
       `UPDATE payments
-          SET status = $2, transaction_id = COALESCE($3, transaction_id), raw_response = $4
+          SET status = $2,
+              transaction_id = COALESCE($3, transaction_id),
+              raw_response = COALESCE($4, raw_response),
+              failure_reason = COALESCE($5, failure_reason),
+              verified_at = COALESCE($6, CASE WHEN $2 IN ('successful', 'failed', 'cancelled') THEN NOW() ELSE verified_at END)
         WHERE reference = $1
         RETURNING *`,
-      [reference, status, transactionId ?? null, rawResponse ? JSON.stringify(rawResponse) : null]
+      [
+        reference,
+        status,
+        transactionId ?? null,
+        rawResponse ? JSON.stringify(rawResponse) : null,
+        failureReason ?? null,
+        verifiedAt ?? null,
+      ]
     );
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }
@@ -857,6 +894,7 @@ export class PgStore {
     return {
       id: row.id,
       bookingId: row.booking_id,
+      userId: row.user_id,
       amountKobo: Number(row.amount_kobo),
       currency: row.currency,
       provider: row.provider,
@@ -864,7 +902,9 @@ export class PgStore {
       transactionId: row.transaction_id ?? undefined,
       status: row.status,
       rawResponse: row.raw_response,
+      failureReason: row.failure_reason ?? undefined,
       createdAt: new Date(row.created_at).toISOString(),
+      verifiedAt: row.verified_at ? new Date(row.verified_at).toISOString() : undefined,
     };
   }
 }

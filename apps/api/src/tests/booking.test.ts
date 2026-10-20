@@ -357,3 +357,10 @@ test('expired reservations are automatically marked expired and release their se
   const rebook = await postBooking({ showtimeId, seatIds: [seat.id] });
   assert.equal(rebook.res.status, 201, 'expired seat must be re-bookable');
 });
+
+after(async () => {
+  if (server) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  await cache.close();
+});

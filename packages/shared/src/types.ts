@@ -177,6 +177,37 @@ export interface Booking {
   expiresAt?: string;
 }
 
+// Payment Types
+export type PaymentStatus = 'pending' | 'successful' | 'failed' | 'cancelled';
+
+export interface PaymentDetails {
+  id: string;
+  bookingId: string;
+  userId: string;
+  amountKobo: number;
+  currency: string;
+  provider: string;
+  reference: string;
+  transactionId?: string;
+  status: PaymentStatus;
+  failureReason?: string;
+  createdAt: string;
+  verifiedAt?: string;
+}
+
+export interface PaymentInitResult {
+  link?: string;
+  reference: string;
+  amountKobo: number;
+  currency: string;
+}
+
+export interface PaymentVerifyResult {
+  booking: Booking;
+  payment: PaymentDetails;
+  isConfirmed: boolean;
+}
+
 // Generic API Envelope
 export interface ApiResponse<T = unknown> {
   success: boolean;

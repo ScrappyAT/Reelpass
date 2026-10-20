@@ -115,3 +115,7 @@ test('health check endpoint exposes services with safe Redis diagnostics', async
   const rawJson = JSON.stringify(json);
   assert.ok(!rawJson.includes('password'), 'Health response must not contain passwords');
 });
+
+after(async () => {
+  await cache.close();
+});

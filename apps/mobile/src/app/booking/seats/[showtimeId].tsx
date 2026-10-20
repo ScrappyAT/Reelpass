@@ -7,11 +7,14 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as WebBrowser from 'expo-web-browser';
+import QRCode from 'react-native-qrcode-svg';
 import { Seat, Showtime, SeatMapLayout, Booking, formatNaira } from '@matinee/shared';
 import { colors, radii, shadows, spacing } from '../../../theme';
 import {
   Text,
   Button,
+  Badge,
   SeatMap,
   BottomSheet,
   useToast,
@@ -19,6 +22,8 @@ import {
 } from '../../../components/ui';
 import { api, isApiConnectionError } from '../../../services/api';
 import { formatShowtimeDate, formatShowtimeTime } from '../../../utils/datetime';
+
+type PaymentUiState = 'idle' | 'initializing' | 'checkout_open' | 'verifying' | 'success' | 'failed' | 'cancelled';
 
 /** Turn an API error envelope or thrown error into an actionable user message. */
 function describeBookingError(res: {
@@ -52,6 +57,10 @@ export default function SeatSelectionScreen() {
   const [reserving, setReserving] = useState(false);
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
   const [showSuccessSheet, setShowSuccessSheet] = useState(false);
+
+  // Payment UI flow state
+  const [paymentState, setPaymentState] = useState<PaymentUiState>('idle');
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchSeatLayout = async () => {
@@ -126,6 +135,8 @@ export default function SeatSelectionScreen() {
 
       if (res.success && res.data) {
         setCreatedBooking(res.data);
+        setPaymentState('idle');
+        setPaymentError(null);
         setShowSuccessSheet(true);
       } else {
         // If conflict or seat unavailable, refresh layout immediately to show latest seat status
@@ -151,6 +162,98 @@ export default function SeatSelectionScreen() {
       });
     } finally {
       setReserving(false);
+    }
+  };
+
+  const handlePayNow = async (bookingOverride?: Booking) => {
+    const targetBooking = bookingOverride || createdBooking;
+    if (!targetBooking) return;
+
+    setPaymentState('initializing');
+    setPaymentError(null);
+
+    try {
+      const initRes = await api.initializePayment(targetBooking.id);
+      if (!initRes.success || !initRes.data?.link) {
+        setPaymentState('failed');
+        setPaymentError(initRes.error?.message || 'Could not initialize payment session.');
+        return;
+      }
+
+      setPaymentState('checkout_open');
+      const checkoutUrl = initRes.data.link;
+      const ref = initRes.data.reference;
+
+      // Open in-app browser with redirect intercept for mobile scheme
+      const result = await WebBrowser.openAuthSessionAsync(
+        checkoutUrl,
+        'mobile://payment-complete'
+      );
+
+      setPaymentState('verifying');
+
+      let returnedStatus: string | null = null;
+      let transactionId: string | undefined;
+      let returnedRef = ref;
+
+      if (result.type === 'success' && result.url) {
+        try {
+          const parsed = new URL(result.url);
+          returnedStatus = parsed.searchParams.get('status');
+          const txId = parsed.searchParams.get('transaction_id');
+          if (txId) transactionId = txId;
+          const rRef = parsed.searchParams.get('tx_ref');
+          if (rRef) returnedRef = rRef;
+        } catch {
+          // If URL parsing fails, proceed with stored reference
+        }
+      }
+
+      // Always perform server-side verification with Flutterwave API
+      const verifyRes = await api.verifyPayment({
+        bookingId: targetBooking.id,
+        reference: returnedRef,
+        transactionId,
+      });
+
+      if (verifyRes.success && verifyRes.data?.isConfirmed && verifyRes.data.booking) {
+        setCreatedBooking(verifyRes.data.booking);
+        setPaymentState('success');
+      } else {
+        if (returnedStatus === 'cancelled' || result.type === 'cancel' || result.type === 'dismiss') {
+          setPaymentState('cancelled');
+          setPaymentError('Checkout window closed. Your seats are still held. Tap Pay Now to try again.');
+        } else {
+          setPaymentState('failed');
+          setPaymentError(verifyRes.error?.message || 'Payment could not be confirmed. Please check your transaction.');
+        }
+      }
+    } catch (err: any) {
+      setPaymentState('failed');
+      setPaymentError(err.message || 'Payment processing error occurred.');
+    }
+  };
+
+  const handleCheckStatus = async () => {
+    if (!createdBooking) return;
+    setPaymentState('verifying');
+    setPaymentError(null);
+    try {
+      const statusRes = await api.getPaymentStatus(createdBooking.id);
+      if (statusRes.success && statusRes.data?.isConfirmed && statusRes.data.booking) {
+        setCreatedBooking(statusRes.data.booking);
+        setPaymentState('success');
+      } else {
+        setPaymentState('idle');
+        showToast({
+          title: 'Payment Pending',
+          message: 'Payment has not been completed yet. You can tap Pay Now to proceed.',
+          type: 'gold',
+        });
+      }
+    } catch (err: any) {
+      setPaymentState('failed');
+      setPaymentError(err.message || 'Could not verify payment status.');
     }
   };
 
@@ -180,6 +283,9 @@ export default function SeatSelectionScreen() {
       </View>
     );
   }
+
+  const activeBooking = createdBooking;
+  const isConfirmed = activeBooking?.status === 'confirmed';
 
   return (
     <View style={styles.container}>
@@ -232,88 +338,282 @@ export default function SeatSelectionScreen() {
         />
       </View>
 
-      {/* Reservation Confirmation BottomSheet */}
+      {/* Booking & Flutterwave Payment BottomSheet */}
       <BottomSheet
         visible={showSuccessSheet}
-        onClose={() => setShowSuccessSheet(false)}
-        title="Reservation Summary"
+        onClose={() => {
+          if (paymentState === 'initializing' || paymentState === 'verifying') return;
+          setShowSuccessSheet(false);
+        }}
+        title={
+          paymentState === 'success'
+            ? 'Admission Confirmed'
+            : paymentState === 'verifying' || paymentState === 'initializing'
+              ? 'Payment Processing'
+              : paymentState === 'failed' || paymentState === 'cancelled'
+                ? 'Payment Status'
+                : 'Booking Summary'
+        }
       >
         <View style={styles.modalContent}>
-          <View style={styles.successIconCircle}>
-            <Ionicons name="time-outline" size={36} color={colors.gold} />
-          </View>
+          {/* STATE 1: VERIFYING / INITIALIZING */}
+          {(paymentState === 'initializing' || paymentState === 'verifying' || paymentState === 'checkout_open') && (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={colors.gold} />
+              <Text variant="h2" align="center" style={{ marginTop: spacing.md }}>
+                {paymentState === 'initializing'
+                  ? 'Connecting to Flutterwave...'
+                  : paymentState === 'checkout_open'
+                    ? 'Awaiting Payment...'
+                    : 'Verifying Transaction...'}
+              </Text>
+              <Text variant="body" color="secondary" align="center" style={{ marginTop: spacing.xs }}>
+                Securing your seat reservation with Flutterwave Standard Checkout (NGN).
+              </Text>
+            </View>
+          )}
 
-          <Text variant="h2" align="center" style={styles.successTitle}>
-            Seats Reserved (Payment Pending)
-          </Text>
+          {/* STATE 2: SUCCESS */}
+          {paymentState === 'success' && activeBooking && (
+            <>
+              <View style={styles.successIconCircle}>
+                <Ionicons name="checkmark-circle" size={42} color={colors.gold} />
+              </View>
 
-          <Text variant="body" color="secondary" align="center" style={styles.successDescription}>
-            Booking Reference:{' '}
-            <Text variant="bodyBold" color="gold">
-              {createdBooking?.bookingReference || '—'}
-            </Text>
-          </Text>
+              <Badge label="PAYMENT SUCCESSFUL" variant="success" />
 
-          <View style={styles.ticketSummaryBox}>
-            <Text variant="caption" color="secondary">
-              Cinema:{' '}
-              <Text variant="caption" color="primary">
-                {createdBooking?.showtime.cinemaName || showtime?.cinemaName || '—'}
+              <Text variant="h2" align="center" style={styles.successTitle}>
+                Booking Confirmed!
               </Text>
-            </Text>
-            <Text variant="caption" color="secondary">
-              When:{' '}
-              <Text variant="caption" color="primary">
-                {createdBooking
-                  ? `${formatShowtimeDate(createdBooking.showtime.startTime)} • ${formatShowtimeTime(createdBooking.showtime.startTime)}`
-                  : showtime
-                    ? `${formatShowtimeDate(showtime.startTime)} • ${formatShowtimeTime(showtime.startTime)}`
-                    : '—'}
-              </Text>
-            </Text>
-            <Text variant="caption" color="secondary">
-              Seats:{' '}
-              <Text variant="caption" color="primary">
-                {(createdBooking?.seats || selectedSeats).map((s) => s.label).join(', ')}
-              </Text>
-            </Text>
-            <Text variant="caption" color="secondary">
-              Total Amount:{' '}
-              <Text variant="caption" color="gold">
-                {formatNaira(createdBooking?.totalAmount ?? totalPrice)}
-              </Text>
-            </Text>
-            <Text variant="caption" color="secondary">
-              Status:{' '}
-              <Text variant="caption" color="gold">
-                Reserved (Payment Pending)
-              </Text>
-            </Text>
-            <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
-              Your seats are held. Digital admission passes are issued upon payment confirmation in Phase 2.
-            </Text>
-          </View>
 
-          <View style={styles.modalActions}>
-            <Button
-              title="View in My Tickets"
-              onPress={() => {
-                setShowSuccessSheet(false);
-                router.replace('/(tabs)/tickets');
-              }}
-              variant="primary"
-              size="md"
-            />
-            <Button
-              title="Done"
-              onPress={() => {
-                setShowSuccessSheet(false);
-                router.replace('/(tabs)');
-              }}
-              variant="ghost"
-              size="sm"
-            />
-          </View>
+              <Text variant="body" color="secondary" align="center" style={styles.successDescription}>
+                Reference:{' '}
+                <Text variant="bodyBold" color="gold">
+                  {activeBooking.bookingReference}
+                </Text>
+              </Text>
+
+              {/* Digital QR Code Pass */}
+              <View style={styles.qrContainer}>
+                <View style={styles.qrWhiteBox}>
+                  <QRCode
+                    value={activeBooking.qrCode || `REELPASS-BOOKING-${activeBooking.bookingReference}`}
+                    size={150}
+                    color="#000000"
+                    backgroundColor="#FFFFFF"
+                  />
+                </View>
+                <Text variant="micro" color="tertiary" align="center" style={{ marginTop: spacing.xs }}>
+                  Scan at auditorium checkpoint for admission
+                </Text>
+              </View>
+
+              <View style={styles.ticketSummaryBox}>
+                <Text variant="caption" color="secondary">
+                  Cinema:{' '}
+                  <Text variant="caption" color="primary">
+                    {activeBooking.showtime.cinemaName} • {layout.auditoriumName}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  When:{' '}
+                  <Text variant="caption" color="primary">
+                    {formatShowtimeDate(activeBooking.showtime.startTime)} • {formatShowtimeTime(activeBooking.showtime.startTime)}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Seats:{' '}
+                  <Text variant="caption" color="gold">
+                    {activeBooking.seats.map((s) => s.label).join(', ')}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Amount Paid:{' '}
+                  <Text variant="caption" color="gold">
+                    {formatNaira(activeBooking.totalAmount)}
+                  </Text>
+                </Text>
+              </View>
+
+              <View style={styles.modalActions}>
+                <Button
+                  title="View in My Tickets"
+                  onPress={() => {
+                    setShowSuccessSheet(false);
+                    router.replace('/(tabs)/tickets');
+                  }}
+                  variant="primary"
+                  size="md"
+                  iconLeading={<Ionicons name="qr-code" size={16} color={colors.textInverse} />}
+                />
+                <Button
+                  title="Done"
+                  onPress={() => {
+                    setShowSuccessSheet(false);
+                    router.replace('/(tabs)');
+                  }}
+                  variant="ghost"
+                  size="sm"
+                />
+              </View>
+            </>
+          )}
+
+          {/* STATE 3: FAILED OR CANCELLED */}
+          {(paymentState === 'failed' || paymentState === 'cancelled') && (
+            <>
+              <View style={[styles.successIconCircle, { borderColor: paymentState === 'cancelled' ? colors.gold : colors.error }]}>
+                <Ionicons
+                  name={paymentState === 'cancelled' ? 'alert-circle-outline' : 'close-circle-outline'}
+                  size={40}
+                  color={paymentState === 'cancelled' ? colors.gold : colors.error}
+                />
+              </View>
+
+              <Badge
+                label={paymentState === 'cancelled' ? 'PAYMENT CANCELLED' : 'PAYMENT FAILED'}
+                variant={paymentState === 'cancelled' ? 'warning' : 'danger'}
+              />
+
+              <Text variant="h2" align="center" style={styles.successTitle}>
+                {paymentState === 'cancelled' ? 'Checkout Incomplete' : 'Payment Failed'}
+              </Text>
+
+              <Text variant="body" color="secondary" align="center" style={styles.successDescription}>
+                {paymentError || 'Your payment was not processed.'}
+              </Text>
+
+              <View style={styles.ticketSummaryBox}>
+                <Text variant="caption" color="secondary">
+                  Reference:{' '}
+                  <Text variant="caption" color="gold">
+                    {activeBooking?.bookingReference || '—'}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Seats Held:{' '}
+                  <Text variant="caption" color="primary">
+                    {(activeBooking?.seats || selectedSeats).map((s) => s.label).join(', ')}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Amount Due:{' '}
+                  <Text variant="caption" color="gold">
+                    {formatNaira(activeBooking?.totalAmount ?? totalPrice)}
+                  </Text>
+                </Text>
+                <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
+                  Your seats remain temporarily reserved. You can retry payment immediately.
+                </Text>
+              </View>
+
+              <View style={styles.modalActions}>
+                <Button
+                  title="Retry Payment"
+                  onPress={() => handlePayNow()}
+                  variant="primary"
+                  size="md"
+                  iconLeading={<Ionicons name="refresh" size={16} color={colors.textInverse} />}
+                />
+                <Button
+                  title="Check Payment Status"
+                  onPress={handleCheckStatus}
+                  variant="outline"
+                  size="sm"
+                />
+                <Button
+                  title="Pay Later (View in My Tickets)"
+                  onPress={() => {
+                    setShowSuccessSheet(false);
+                    router.replace('/(tabs)/tickets');
+                  }}
+                  variant="ghost"
+                  size="sm"
+                />
+              </View>
+            </>
+          )}
+
+          {/* STATE 4: IDLE (RESERVED, READY TO PAY) */}
+          {paymentState === 'idle' && (
+            <>
+              <View style={styles.successIconCircle}>
+                <Ionicons name="time-outline" size={36} color={colors.gold} />
+              </View>
+
+              <Badge label="SEATS RESERVED (PAYMENT PENDING)" variant="warning" />
+
+              <Text variant="h2" align="center" style={styles.successTitle}>
+                Reservation Summary
+              </Text>
+
+              <Text variant="body" color="secondary" align="center" style={styles.successDescription}>
+                Booking Reference:{' '}
+                <Text variant="bodyBold" color="gold">
+                  {createdBooking?.bookingReference || '—'}
+                </Text>
+              </Text>
+
+              <View style={styles.ticketSummaryBox}>
+                <Text variant="caption" color="secondary">
+                  Movie:{' '}
+                  <Text variant="caption" color="primary">
+                    {showtime?.movieTitle || '—'}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Cinema:{' '}
+                  <Text variant="caption" color="primary">
+                    {createdBooking?.showtime.cinemaName || showtime?.cinemaName || '—'}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  When:{' '}
+                  <Text variant="caption" color="primary">
+                    {createdBooking
+                      ? `${formatShowtimeDate(createdBooking.showtime.startTime)} • ${formatShowtimeTime(createdBooking.showtime.startTime)}`
+                      : showtime
+                        ? `${formatShowtimeDate(showtime.startTime)} • ${formatShowtimeTime(showtime.startTime)}`
+                        : '—'}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Seats:{' '}
+                  <Text variant="caption" color="primary">
+                    {(createdBooking?.seats || selectedSeats).map((s) => s.label).join(', ')}
+                  </Text>
+                </Text>
+                <Text variant="caption" color="secondary">
+                  Total Payable:{' '}
+                  <Text variant="caption" color="gold">
+                    {formatNaira(createdBooking?.totalAmount ?? totalPrice)}
+                  </Text>
+                </Text>
+                <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
+                  Pay via Flutterwave Standard Checkout to immediately issue your scannable QR ticket.
+                </Text>
+              </View>
+
+              <View style={styles.modalActions}>
+                <Button
+                  title={`Pay with Flutterwave (${formatNaira(createdBooking?.totalAmount ?? totalPrice)})`}
+                  onPress={() => handlePayNow()}
+                  variant="primary"
+                  size="md"
+                  iconLeading={<Ionicons name="card-outline" size={18} color={colors.textInverse} />}
+                />
+                <Button
+                  title="Pay Later (View in My Tickets)"
+                  onPress={() => {
+                    setShowSuccessSheet(false);
+                    router.replace('/(tabs)/tickets');
+                  }}
+                  variant="ghost"
+                  size="sm"
+                />
+              </View>
+            </>
+          )}
         </View>
       </BottomSheet>
     </View>
@@ -364,22 +664,39 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: spacing.md,
   },
+  loadingContainer: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.lg,
+  },
   successIconCircle: {
-    width: 70,
-    height: 70,
+    width: 68,
+    height: 68,
     borderRadius: radii.round,
     backgroundColor: 'rgba(229, 169, 60, 0.15)',
     borderWidth: 1.5,
     borderColor: colors.borderGold,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
   successTitle: {
-    marginBottom: spacing.xs,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xxs,
   },
   successDescription: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  qrContainer: {
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  qrWhiteBox: {
+    backgroundColor: '#FFFFFF',
+    padding: spacing.md,
+    borderRadius: radii.md,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   ticketSummaryBox: {
     width: '100%',
@@ -389,7 +706,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     gap: 6,
-    marginBottom: spacing.xl,
+    marginBottom: spacing.lg,
   },
   modalActions: {
     width: '100%',

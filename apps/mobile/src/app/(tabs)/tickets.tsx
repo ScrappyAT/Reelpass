@@ -10,6 +10,8 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
 import QRCode from 'react-native-qrcode-svg';
 import { Booking, formatNaira } from '@matinee/shared';
 import { colors, radii, shadows, spacing } from '../../theme';
@@ -20,6 +22,7 @@ import {
   Button,
   BottomSheet,
   EmptyState,
+  useToast,
 } from '../../components/ui';
 import { api, isApiConnectionError } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -29,6 +32,7 @@ export default function MyTicketsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { token, isLoading: authLoading } = useAuth();
+  const { showToast } = useToast();
 
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,6 +40,8 @@ export default function MyTicketsScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('upcoming');
   const [selectedTicketBooking, setSelectedTicketBooking] = useState<Booking | null>(null);
+  const [payingBookingId, setPayingBookingId] = useState<string | null>(null);
+  const [checkingBookingId, setCheckingBookingId] = useState<string | null>(null);
 
   const fetchTickets = useCallback(async () => {
     try {
@@ -74,9 +80,122 @@ export default function MyTicketsScreen() {
     }
   }, [authLoading, token, fetchTickets]);
 
+  // Listen for deep link redirects back into the app from checkout
+  useEffect(() => {
+    const sub = Linking.addEventListener('url', (event) => {
+      if (event.url && event.url.includes('payment-complete')) {
+        fetchTickets();
+      }
+    });
+    return () => sub.remove();
+  }, [fetchTickets]);
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchTickets();
+  };
+
+  const handlePayTicket = async (booking: Booking) => {
+    setPayingBookingId(booking.id);
+    try {
+      const initRes = await api.initializePayment(booking.id);
+      if (!initRes.success || !initRes.data?.link) {
+        showToast({
+          title: 'Payment Error',
+          message: initRes.error?.message || 'Could not start checkout session.',
+          type: 'error',
+        });
+        return;
+      }
+
+      const checkoutUrl = initRes.data.link;
+      const ref = initRes.data.reference;
+
+      const result = await WebBrowser.openAuthSessionAsync(
+        checkoutUrl,
+        'mobile://payment-complete'
+      );
+
+      let transactionId: string | undefined;
+      let returnedRef = ref;
+      if (result.type === 'success' && result.url) {
+        try {
+          const parsed = new URL(result.url);
+          const txId = parsed.searchParams.get('transaction_id');
+          if (txId) transactionId = txId;
+          const rRef = parsed.searchParams.get('tx_ref');
+          if (rRef) returnedRef = rRef;
+        } catch {}
+      }
+
+      const verifyRes = await api.verifyPayment({
+        bookingId: booking.id,
+        reference: returnedRef,
+        transactionId,
+      });
+
+      if (verifyRes.success && verifyRes.data?.isConfirmed && verifyRes.data.booking) {
+        showToast({
+          title: 'Payment Confirmed',
+          message: 'Your contactless QR admission pass is ready!',
+          type: 'gold',
+        });
+        setSelectedTicketBooking(verifyRes.data.booking);
+        await fetchTickets();
+      } else {
+        if (result.type === 'cancel' || result.type === 'dismiss') {
+          showToast({
+            title: 'Payment Incomplete',
+            message: 'Checkout window closed. Your seats remain reserved until expiry.',
+            type: 'gold',
+          });
+        } else {
+          showToast({
+            title: 'Verification Failed',
+            message: verifyRes.error?.message || 'Payment could not be verified.',
+            type: 'error',
+          });
+        }
+      }
+    } catch (err: any) {
+      showToast({
+        title: 'Payment Error',
+        message: err.message || 'Payment failed.',
+        type: 'error',
+      });
+    } finally {
+      setPayingBookingId(null);
+    }
+  };
+
+  const handleCheckTicketStatus = async (booking: Booking) => {
+    setCheckingBookingId(booking.id);
+    try {
+      const res = await api.getPaymentStatus(booking.id);
+      if (res.success && res.data?.isConfirmed && res.data.booking) {
+        showToast({
+          title: 'Payment Verified',
+          message: 'Your booking is confirmed! Pass has been generated.',
+          type: 'gold',
+        });
+        setSelectedTicketBooking(res.data.booking);
+        await fetchTickets();
+      } else {
+        showToast({
+          title: 'Status Pending',
+          message: 'Payment has not been completed. You can tap Pay Now to proceed.',
+          type: 'gold',
+        });
+      }
+    } catch (err: any) {
+      showToast({
+        title: 'Check Failed',
+        message: err.message || 'Could not verify payment status.',
+        type: 'error',
+      });
+    } finally {
+      setCheckingBookingId(null);
+    }
   };
 
   // Determine whether a booking is an active upcoming reservation
@@ -302,6 +421,14 @@ export default function MyTicketsScreen() {
                       size="sm"
                       iconLeading={<Ionicons name="qr-code" size={14} color={colors.textInverse} />}
                     />
+                  ) : statusInfo.isPending ? (
+                    <Button
+                      title="Complete Payment"
+                      onPress={() => setSelectedTicketBooking(booking)}
+                      variant="primary"
+                      size="sm"
+                      iconLeading={<Ionicons name="card-outline" size={14} color={colors.textInverse} />}
+                    />
                   ) : (
                     <Button
                       title="Reservation Details"
@@ -416,7 +543,7 @@ export default function MyTicketsScreen() {
 
               <Text variant="body" color="secondary" align="center" style={styles.pendingDescription}>
                 {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now())
-                  ? 'Your seats are temporarily held in the backend database. Digital admission QR passes are issued exclusively for confirmed bookings once payment is settled in Phase 2.'
+                  ? 'Your seats are temporarily held. Complete payment via Flutterwave to instantly generate your contactless digital cinema pass.'
                   : 'This reservation is inactive. Contested seats have been returned to the auditorium seat map.'}
               </Text>
 
@@ -453,13 +580,40 @@ export default function MyTicketsScreen() {
                 </Text>
               </View>
 
-              <Button
-                title="Close"
-                onPress={() => setSelectedTicketBooking(null)}
-                variant="outline"
-                size="md"
-                style={{ width: '100%', marginTop: spacing.md }}
-              />
+              {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now()) ? (
+                <View style={{ width: '100%', gap: spacing.sm, marginTop: spacing.md }}>
+                  <Button
+                    title={`Pay Now (${formatNaira(selectedTicketBooking.totalAmount)})`}
+                    onPress={() => handlePayTicket(selectedTicketBooking)}
+                    loading={payingBookingId === selectedTicketBooking.id}
+                    variant="primary"
+                    size="md"
+                    iconLeading={<Ionicons name="card-outline" size={16} color={colors.textInverse} />}
+                  />
+                  <Button
+                    title="Check Payment Status"
+                    onPress={() => handleCheckTicketStatus(selectedTicketBooking)}
+                    loading={checkingBookingId === selectedTicketBooking.id}
+                    variant="outline"
+                    size="sm"
+                    iconLeading={<Ionicons name="refresh" size={14} color={colors.gold} />}
+                  />
+                  <Button
+                    title="Close"
+                    onPress={() => setSelectedTicketBooking(null)}
+                    variant="ghost"
+                    size="sm"
+                  />
+                </View>
+              ) : (
+                <Button
+                  title="Close"
+                  onPress={() => setSelectedTicketBooking(null)}
+                  variant="outline"
+                  size="md"
+                  style={{ width: '100%', marginTop: spacing.md }}
+                />
+              )}
             </View>
           )
         )}

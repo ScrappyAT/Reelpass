@@ -52,20 +52,25 @@ export interface ReelStore {
   createPayment(input: {
     id: string;
     bookingId: string;
+    userId: string;
     amountKobo: number;
     currency?: string;
     provider?: string;
     reference: string;
-    status?: 'pending' | 'successful' | 'failed';
+    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
     transactionId?: string;
+    failureReason?: string;
   }): Promise<PaymentRecord>;
   getPaymentByReference(reference: string): Promise<PaymentRecord | null>;
   getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null>;
+  getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null>;
   updatePaymentStatus(
     reference: string,
-    status: 'pending' | 'successful' | 'failed',
+    status: 'pending' | 'successful' | 'failed' | 'cancelled',
     transactionId?: string,
-    rawResponse?: unknown
+    rawResponse?: unknown,
+    failureReason?: string,
+    verifiedAt?: Date
   ): Promise<PaymentRecord | null>;
 }
 
@@ -295,22 +300,26 @@ class MemoryAdapter implements ReelStore {
   async createPayment(input: {
     id: string;
     bookingId: string;
+    userId: string;
     amountKobo: number;
     currency?: string;
     provider?: string;
     reference: string;
-    status?: 'pending' | 'successful' | 'failed';
+    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
     transactionId?: string;
+    failureReason?: string;
   }): Promise<PaymentRecord> {
     const record: PaymentRecord = {
       id: input.id,
       bookingId: input.bookingId,
+      userId: input.userId,
       amountKobo: input.amountKobo,
       currency: input.currency ?? 'NGN',
       provider: input.provider ?? 'flutterwave',
       reference: input.reference,
       transactionId: input.transactionId,
       status: input.status ?? 'pending',
+      failureReason: input.failureReason,
       createdAt: new Date().toISOString(),
     };
     this.payments.set(record.reference, record);
@@ -320,19 +329,31 @@ class MemoryAdapter implements ReelStore {
     return this.payments.get(reference) ?? null;
   }
   async getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null> {
-    return Array.from(this.payments.values()).find((p) => p.bookingId === bookingId) ?? null;
+    const matches = Array.from(this.payments.values()).filter((p) => p.bookingId === bookingId);
+    if (matches.length === 0) return null;
+    return matches.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  }
+  async getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null> {
+    return Array.from(this.payments.values()).find((p) => p.transactionId === transactionId) ?? null;
   }
   async updatePaymentStatus(
     reference: string,
-    status: 'pending' | 'successful' | 'failed',
+    status: 'pending' | 'successful' | 'failed' | 'cancelled',
     transactionId?: string,
-    rawResponse?: unknown
+    rawResponse?: unknown,
+    failureReason?: string,
+    verifiedAt?: Date
   ): Promise<PaymentRecord | null> {
     const record = this.payments.get(reference);
     if (!record) return null;
     record.status = status;
     if (transactionId) record.transactionId = transactionId;
     if (rawResponse !== undefined) record.rawResponse = rawResponse;
+    if (failureReason !== undefined) record.failureReason = failureReason;
+    if (verifiedAt) record.verifiedAt = verifiedAt.toISOString();
+    else if (status === 'successful' || status === 'failed' || status === 'cancelled') {
+      record.verifiedAt = new Date().toISOString();
+    }
     return record;
   }
 }
