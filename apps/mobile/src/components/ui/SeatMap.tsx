@@ -289,16 +289,19 @@ const styles = StyleSheet.create({
   legendContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'center',
+    justifyContent: 'space-evenly',
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
+    rowGap: 8,
+    columnGap: 10,
+    paddingHorizontal: spacing.sm,
     marginBottom: spacing.lg,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
+    minWidth: 68,
+    justifyContent: 'center',
   },
   legendIndicator: {
     width: 12,

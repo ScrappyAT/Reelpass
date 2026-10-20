@@ -152,6 +152,22 @@ class MemoryAdapter implements ReelStore {
     const showtime = memoryStore.showtimes.get(input.showtimeId);
     if (!showtime) throw new BookingConflictError('SHOWTIME_NOT_FOUND', 'Showtime does not exist');
 
+    // Clean up expired pending holds first
+    const now = Date.now();
+    for (const b of memoryStore.bookings.values()) {
+      if (b.status === 'pending' && b.expiresAt && new Date(b.expiresAt).getTime() < now) {
+        b.status = 'expired';
+        const audSeats = memoryStore.getSeats(b.showtime.auditoriumId);
+        b.seats.forEach((bs) => {
+          const s = audSeats.find((seat) => seat.id === bs.id);
+          if (s) {
+            s.status = 'available';
+          }
+        });
+        memoryStore.refreshShowtimeAvailability(b.showtime);
+      }
+    }
+
     const seatIds = Array.from(new Set(input.seatIds));
     const allSeats = memoryStore.getSeats(showtime.auditoriumId);
     const selected = seatIds
@@ -219,9 +235,32 @@ class MemoryAdapter implements ReelStore {
   }
 
   async getBooking(id: string): Promise<Booking | null> {
-    return memoryStore.bookings.get(id) ?? null;
+    const booking = memoryStore.bookings.get(id);
+    if (!booking) return null;
+    if (booking.status === 'pending' && booking.expiresAt && new Date(booking.expiresAt).getTime() < Date.now()) {
+      booking.status = 'expired';
+      const audSeats = memoryStore.getSeats(booking.showtime.auditoriumId);
+      booking.seats.forEach((bs) => {
+        const s = audSeats.find((seat) => seat.id === bs.id);
+        if (s) s.status = 'available';
+      });
+      memoryStore.refreshShowtimeAvailability(booking.showtime);
+    }
+    return booking;
   }
   async listBookingsForUser(userId: string): Promise<Booking[]> {
+    const now = Date.now();
+    for (const b of memoryStore.bookings.values()) {
+      if (b.status === 'pending' && b.expiresAt && new Date(b.expiresAt).getTime() < now) {
+        b.status = 'expired';
+        const audSeats = memoryStore.getSeats(b.showtime.auditoriumId);
+        b.seats.forEach((bs) => {
+          const s = audSeats.find((seat) => seat.id === bs.id);
+          if (s) s.status = 'available';
+        });
+        memoryStore.refreshShowtimeAvailability(b.showtime);
+      }
+    }
     return Array.from(memoryStore.bookings.values())
       .filter((b) => b.userId === userId)
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));

@@ -322,10 +322,10 @@ export default function DiscoverScreen() {
                   color={selectedCinema?.id === cinema.id ? colors.gold : colors.textTertiary}
                 />
                 <View style={{ flex: 1 }}>
-                  <Text variant="bodyBold" numberOfLines={1}>
+                  <Text variant="bodyBold" numberOfLines={2}>
                     {cinema.name}
                   </Text>
-                  <Text variant="caption" color="secondary" numberOfLines={1}>
+                  <Text variant="caption" color="secondary" numberOfLines={2}>
                     {cinemaLocationLabel(cinema)}
                   </Text>
                 </View>

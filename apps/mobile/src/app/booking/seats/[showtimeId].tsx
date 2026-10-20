@@ -128,8 +128,15 @@ export default function SeatSelectionScreen() {
         setCreatedBooking(res.data);
         setShowSuccessSheet(true);
       } else {
+        // If conflict or seat unavailable, refresh layout immediately to show latest seat status
+        api.getShowtimeSeats(showtimeId).then((seatsRes) => {
+          if (seatsRes.success && seatsRes.data) {
+            setLayout(seatsRes.data);
+          }
+        }).catch(() => {});
+        setSelectedSeats([]);
         showToast({
-          title: 'Reservation Error',
+          title: 'Reservation Conflict',
           message: describeBookingError(res),
           type: 'error',
         });
@@ -182,7 +189,7 @@ export default function SeatSelectionScreen() {
           <Text variant="h2" numberOfLines={1}>
             {showtime?.movieTitle || 'Movie Screening'}
           </Text>
-          <Text variant="caption" color="secondary" numberOfLines={1}>
+          <Text variant="caption" color="secondary" numberOfLines={2}>
             {showtime?.cinemaName} • {layout.auditoriumName} • {layout.totalSeats} Seats
           </Text>
         </View>
@@ -229,15 +236,15 @@ export default function SeatSelectionScreen() {
       <BottomSheet
         visible={showSuccessSheet}
         onClose={() => setShowSuccessSheet(false)}
-        title="Reservation Confirmed"
+        title="Reservation Summary"
       >
         <View style={styles.modalContent}>
           <View style={styles.successIconCircle}>
-            <Ionicons name="checkmark-done" size={36} color={colors.gold} />
+            <Ionicons name="time-outline" size={36} color={colors.gold} />
           </View>
 
           <Text variant="h2" align="center" style={styles.successTitle}>
-            Seats Reserved!
+            Seats Reserved (Payment Pending)
           </Text>
 
           <Text variant="body" color="secondary" align="center" style={styles.successDescription}>
@@ -276,8 +283,14 @@ export default function SeatSelectionScreen() {
                 {formatNaira(createdBooking?.totalAmount ?? totalPrice)}
               </Text>
             </Text>
-            <Text variant="micro" color="tertiary" style={{ marginTop: 4 }}>
-              Status: Reserved (Payment Integration Comes In Phase 2)
+            <Text variant="caption" color="secondary">
+              Status:{' '}
+              <Text variant="caption" color="gold">
+                Reserved (Payment Pending)
+              </Text>
+            </Text>
+            <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
+              Your seats are held. Digital admission passes are issued upon payment confirmation in Phase 2.
             </Text>
           </View>
 

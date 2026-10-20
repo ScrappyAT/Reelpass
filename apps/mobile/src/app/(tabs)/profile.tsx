@@ -55,7 +55,12 @@ export default function ProfileScreen() {
               <Text variant="caption" color="secondary">
                 {user ? user.email : 'Sign in to access VIP tier'}
               </Text>
-              <Badge label="GOLD TIER MEMBER" variant="gold" style={{ marginTop: 4 }} />
+              <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                <Badge label="GOLD TIER MEMBER" variant="gold" />
+                {user?.id === 'u-1001-demo-user-id' && (
+                  <Badge label="DEMO ACCOUNT" variant="warning" />
+                )}
+              </View>
             </View>
           </View>
 
@@ -85,6 +90,19 @@ export default function ProfileScreen() {
             </View>
           </View>
         </Card>
+
+        {/* Demonstration Data Banner */}
+        {user?.id === 'u-1001-demo-user-id' && (
+          <View style={styles.demoBanner}>
+            <Ionicons name="information-circle-outline" size={16} color={colors.gold} />
+            <Text variant="micro" color="secondary" style={styles.demoBannerText}>
+              <Text variant="micro" color="gold" style={{ fontWeight: '700' }}>
+                Demonstration Profile:
+              </Text>{' '}
+              Pre-configured sample account with simulated membership and loyalty data for previewing ReelPass features.
+            </Text>
+          </View>
+        )}
 
         {/* Section 1: Developer & Component Gallery */}
         <Text variant="micro" color="tertiary" style={styles.sectionHeader}>
@@ -287,6 +305,21 @@ const styles = StyleSheet.create({
   attributionText: {
     flex: 1,
     lineHeight: 14,
+  },
+  demoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: 'rgba(229, 169, 60, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(229, 169, 60, 0.25)',
+    borderRadius: radii.md,
+    padding: spacing.md,
+    marginVertical: spacing.xs,
+  },
+  demoBannerText: {
+    flex: 1,
+    lineHeight: 16,
   },
   actions: {
     marginTop: spacing.md,

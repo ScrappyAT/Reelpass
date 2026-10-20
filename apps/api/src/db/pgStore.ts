@@ -478,6 +478,30 @@ export class PgStore {
       const expiresAt = new Date(now + input.holdTtlSeconds * 1000);
 
       try {
+        // Clean up any expired pending holds for the requested seats so they can be re-held immediately
+        await client.query(
+          `DELETE FROM booking_seats
+            WHERE showtime_id = $1 AND seat_id = ANY($2::text[])
+              AND booking_id IN (
+                SELECT id FROM bookings WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
+              )`,
+          [input.showtimeId, seatIds]
+        );
+        await client.query(
+          `DELETE FROM tickets
+            WHERE showtime_id = $1 AND seat_id = ANY($2::text[])
+              AND booking_id IN (
+                SELECT id FROM bookings WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
+              )`,
+          [input.showtimeId, seatIds]
+        );
+        await client.query(
+          `UPDATE bookings
+              SET status = 'expired'
+            WHERE showtime_id = $1 AND status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()`,
+          [input.showtimeId]
+        );
+
         await client.query(
           `INSERT INTO bookings
              (id, booking_reference, user_id, showtime_id, total_amount_kobo, currency,
@@ -672,6 +696,15 @@ export class PgStore {
   }
 
   async listBookingsForUser(userId: string): Promise<Booking[]> {
+    // Mark any stale pending holds for this user as expired in the database
+    await this.pool
+      .query(
+        `UPDATE bookings SET status = 'expired'
+          WHERE user_id = $1 AND status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()`,
+        [userId]
+      )
+      .catch(() => undefined);
+
     const res = await this.pool.query<{ id: string }>(
       `SELECT id FROM bookings WHERE user_id = $1 ORDER BY created_at DESC`,
       [userId]
@@ -709,6 +742,9 @@ export class PgStore {
       [id]
     );
 
+    const isExpiredHold = row.status === 'pending' && row.expires_at && new Date(row.expires_at).getTime() < Date.now();
+    const effectiveStatus: BookingStatus = isExpiredHold ? 'expired' : (row.status as BookingStatus);
+
     const seats: Seat[] = seatsRes.rows.map((r) => ({
       id: r.seat_id,
       auditoriumId: showtime.auditoriumId,
@@ -717,7 +753,7 @@ export class PgStore {
       label: r.seat_label,
       type: mapSeatType(r.seat_type),
       // Price consistent with the showtime-specific price (integer kobo, NGN).
-      status: row.status === 'confirmed' ? 'sold' : 'held',
+      status: effectiveStatus === 'confirmed' ? 'sold' : 'held',
       price: Number(r.price_kobo),
     }));
 
@@ -742,7 +778,7 @@ export class PgStore {
       tickets,
       totalAmount: Number(row.total_amount_kobo),
       currency: row.currency,
-      status: row.status as BookingStatus,
+      status: effectiveStatus,
       paymentStatus: row.payment_status as 'pending' | 'successful' | 'failed',
       paymentId: row.payment_id ?? undefined,
       qrCode: row.qr_code,

@@ -171,7 +171,7 @@ export default function ShowtimeSelectionScreen() {
                     </Text>
                     <View style={styles.locationRow}>
                       <Ionicons name="location-outline" size={13} color={colors.gold} />
-                      <Text variant="caption" color="secondary" numberOfLines={1} style={{ flex: 1 }}>
+                      <Text variant="caption" color="secondary" numberOfLines={2} style={{ flex: 1 }}>
                         {cinemaLocationLabel(cinema)} • {cinema.address}
                       </Text>
                     </View>

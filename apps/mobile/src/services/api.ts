@@ -11,6 +11,8 @@ import {
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
+const PRODUCTION_API_URL = 'https://matineeapi-production.up.railway.app/api/v1';
+
 // Dynamically resolve API URL for physical devices on same Wi-Fi, emulators, or web
 function resolveApiBaseUrl(): string {
   // 1. Explicit environment variable takes precedence
@@ -18,7 +20,12 @@ function resolveApiBaseUrl(): string {
     return process.env.EXPO_PUBLIC_API_URL;
   }
 
-  // 2. Physical phone via Expo Go on Wi-Fi (Constants.expoConfig?.hostUri is e.g. "192.168.1.163:8081")
+  // 2. Production standalone builds (e.g. Android APK / iOS release) default to live Railway API
+  if (!__DEV__) {
+    return PRODUCTION_API_URL;
+  }
+
+  // 3. Physical phone via Expo Go on Wi-Fi (Constants.expoConfig?.hostUri is e.g. "192.168.1.163:8081")
   const hostUri =
     Constants.expoConfig?.hostUri ||
     (Constants as any).manifest2?.extra?.expoGo?.debuggerHost ||
@@ -31,12 +38,12 @@ function resolveApiBaseUrl(): string {
     }
   }
 
-  // 3. Android Emulator fallback
+  // 4. Android Emulator fallback in local dev
   if (Platform.OS === 'android') {
     return 'http://10.0.2.2:4000/api/v1';
   }
 
-  // 4. iOS Simulator / Web fallback
+  // 5. iOS Simulator / Web fallback in local dev
   return 'http://localhost:4000/api/v1';
 }
 

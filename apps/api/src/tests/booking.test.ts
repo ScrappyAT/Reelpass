@@ -294,3 +294,66 @@ test('backend-unreachable booking fails loudly instead of faking success', async
     'a booking POST with no backend must reject'
   );
 });
+
+test('concurrent or duplicate seat booking attempt returns 409 SEAT_UNAVAILABLE with conflict details', async () => {
+  const showtime = memoryStore.showtimes.get(showtimeId)!;
+  const seat = memoryStore.getSeats(showtime.auditoriumId).find((s) => s.status === 'available')!;
+
+  // First user claims the seat
+  const first = await postBooking({ showtimeId, seatIds: [seat.id] });
+  assert.equal(first.res.status, 201, 'initial reservation should succeed');
+
+  // Second user attempts to claim the exact same seat for the same showtime
+  const second = await postBooking({ showtimeId, seatIds: [seat.id] });
+  assert.equal(second.res.status, 409, 'competing reservation must be rejected with 409');
+  assert.equal(second.json.error.code, 'SEAT_UNAVAILABLE');
+  assert.ok(second.json.error.details?.conflicts?.length > 0, 'must report conflicting seat');
+  assert.equal(second.json.error.details.conflicts[0].seatId, seat.id);
+});
+
+test('persisted reservations maintain accurate pending status and never mark unpaid bookings as confirmed', async () => {
+  const showtime = memoryStore.showtimes.get(showtimeId)!;
+  const seat = memoryStore.getSeats(showtime.auditoriumId).find((s) => s.status === 'available')!;
+
+  const created = await postBooking({ showtimeId, seatIds: [seat.id] });
+  assert.equal(created.res.status, 201);
+  const bookingId = created.json.data.id;
+
+  // Retrieve booking via single GET
+  const getRes = await fetch(`${baseUrl}/bookings/${bookingId}`, { headers: authHeaders() });
+  assert.equal(getRes.status, 200);
+  const getJson: any = await getRes.json();
+  assert.equal(getJson.data.status, 'pending', 'unpaid booking must have pending status');
+  assert.equal(getJson.data.paymentStatus, 'pending', 'payment status must be pending');
+
+  // Retrieve via my-tickets list
+  const listRes = await fetch(`${baseUrl}/bookings/my-tickets`, { headers: authHeaders() });
+  assert.equal(listRes.status, 200);
+  const listJson: any = await listRes.json();
+  const found = listJson.data.find((b: any) => b.id === bookingId);
+  assert.ok(found, 'booking must persist and appear in my-tickets');
+  assert.equal(found.status, 'pending');
+});
+
+test('expired reservations are automatically marked expired and release their seats', async () => {
+  const showtime = memoryStore.showtimes.get(showtimeId)!;
+  const seat = memoryStore.getSeats(showtime.auditoriumId).find((s) => s.status === 'available')!;
+
+  const created = await postBooking({ showtimeId, seatIds: [seat.id] });
+  assert.equal(created.res.status, 201);
+  const bookingId = created.json.data.id;
+
+  // Simulate hold expiration by setting expiresAt to the past in memoryStore
+  const booking = memoryStore.bookings.get(bookingId)!;
+  booking.expiresAt = new Date(Date.now() - 60000).toISOString();
+
+  // Fetching the booking should report expired status
+  const getRes = await fetch(`${baseUrl}/bookings/${bookingId}`, { headers: authHeaders() });
+  assert.equal(getRes.status, 200);
+  const getJson: any = await getRes.json();
+  assert.equal(getJson.data.status, 'expired', 'expired hold must have status expired');
+
+  // Creating a new booking for the same seat should now succeed because the expired hold is cleared
+  const rebook = await postBooking({ showtimeId, seatIds: [seat.id] });
+  assert.equal(rebook.res.status, 201, 'expired seat must be re-bookable');
+});

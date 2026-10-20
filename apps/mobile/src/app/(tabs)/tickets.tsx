@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
   RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
@@ -21,19 +22,22 @@ import {
   EmptyState,
 } from '../../components/ui';
 import { api, isApiConnectionError } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { formatShowtimeDate, formatShowtimeTime } from '../../utils/datetime';
 
 export default function MyTicketsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { token, isLoading: authLoading } = useAuth();
 
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('upcoming');
   const [selectedTicketBooking, setSelectedTicketBooking] = useState<Booking | null>(null);
 
-  const fetchTickets = async () => {
+  const fetchTickets = useCallback(async () => {
     try {
       const res = await api.getMyTickets();
       if (res.success && res.data) {
@@ -46,21 +50,81 @@ export default function MyTicketsScreen() {
       console.warn('Failed to load tickets:', e);
       setLoadError(
         isApiConnectionError(e)
-          ? 'Cannot reach ReelPass servers. Start the backend on port 4000 to view your tickets.'
+          ? 'Cannot reach ReelPass servers. Check connection to view your tickets.'
           : 'Could not load your tickets.'
       );
     } finally {
+      setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, []);
+
+  // Fetch whenever screen gains focus or auth token initializes
+  useFocusEffect(
+    useCallback(() => {
+      if (!authLoading) {
+        fetchTickets();
+      }
+    }, [authLoading, fetchTickets])
+  );
 
   useEffect(() => {
-    fetchTickets();
-  }, []);
+    if (!authLoading) {
+      fetchTickets();
+    }
+  }, [authLoading, token, fetchTickets]);
 
   const onRefresh = () => {
     setRefreshing(true);
     fetchTickets();
+  };
+
+  // Determine whether a booking is an active upcoming reservation
+  const isUpcomingBooking = (b: Booking): boolean => {
+    const now = Date.now();
+    // Cancelled and explicit expired bookings belong to history
+    if (b.status === 'cancelled' || b.status === 'expired') {
+      return false;
+    }
+    // Pending hold reservations that exceeded their hold TTL are expired
+    if (b.status === 'pending' && b.expiresAt && new Date(b.expiresAt).getTime() < now) {
+      return false;
+    }
+    // Screening end time (or start time) must not be in the past
+    const screeningEndMs = b.showtime?.endTime
+      ? new Date(b.showtime.endTime).getTime()
+      : new Date(b.showtime?.startTime || 0).getTime();
+    return screeningEndMs >= now;
+  };
+
+  const upcomingBookings = useMemo(() => bookings.filter(isUpcomingBooking), [bookings]);
+  const pastBookings = useMemo(() => bookings.filter((b) => !isUpcomingBooking(b)), [bookings]);
+  const displayedBookings = activeTab === 'upcoming' ? upcomingBookings : pastBookings;
+
+  const getStatusPresentation = (b: Booking) => {
+    const now = Date.now();
+    const isExpiredHold =
+      b.status === 'expired' ||
+      (b.status === 'pending' && b.expiresAt && new Date(b.expiresAt).getTime() < now);
+    const isCancelled = b.status === 'cancelled';
+    const isScreeningPast =
+      (b.showtime?.endTime
+        ? new Date(b.showtime.endTime).getTime()
+        : new Date(b.showtime?.startTime || 0).getTime()) < now;
+
+    if (isCancelled) {
+      return { label: 'CANCELLED', variant: 'danger' as const, isConfirmed: false, isPending: false, isExpired: false };
+    }
+    if (isExpiredHold) {
+      return { label: 'EXPIRED', variant: 'danger' as const, isConfirmed: false, isPending: false, isExpired: true };
+    }
+    if (b.status === 'confirmed') {
+      if (isScreeningPast) {
+        return { label: 'PAST SCREENING', variant: 'outline' as const, isConfirmed: true, isPending: false, isExpired: false };
+      }
+      return { label: 'CONFIRMED', variant: 'success' as const, isConfirmed: true, isPending: false, isExpired: false };
+    }
+    return { label: 'RESERVED (PENDING)', variant: 'warning' as const, isConfirmed: false, isPending: true, isExpired: false };
   };
 
   return (
@@ -88,7 +152,7 @@ export default function MyTicketsScreen() {
               variant="bodyBold"
               color={activeTab === 'upcoming' ? 'gold' : 'secondary'}
             >
-              Upcoming ({bookings.length})
+              Upcoming ({upcomingBookings.length})
             </Text>
           </TouchableOpacity>
 
@@ -104,7 +168,7 @@ export default function MyTicketsScreen() {
               variant="bodyBold"
               color={activeTab === 'past' ? 'gold' : 'secondary'}
             >
-              Past History (0)
+              Past History ({pastBookings.length})
             </Text>
           </TouchableOpacity>
         </View>
@@ -121,37 +185,52 @@ export default function MyTicketsScreen() {
           />
         }
       >
-        {activeTab === 'past' || bookings.length === 0 ? (
+        {loading && bookings.length === 0 ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.gold} />
+            <Text variant="caption" color="secondary" style={{ marginTop: spacing.sm }}>
+              Loading reservations...
+            </Text>
+          </View>
+        ) : displayedBookings.length === 0 ? (
           <EmptyState
-            icon={loadError ? 'cloud-offline-outline' : 'ticket-outline'}
-            title={loadError ? 'Tickets Unavailable' : 'No Active Tickets'}
+            icon={loadError ? 'cloud-offline-outline' : activeTab === 'upcoming' ? 'ticket-outline' : 'time-outline'}
+            title={
+              loadError
+                ? 'Tickets Unavailable'
+                : activeTab === 'upcoming'
+                  ? 'No Upcoming Reservations'
+                  : 'No Past History'
+            }
             description={
               loadError ||
-              "You don't have any upcoming reservations. Check out the latest movies and book your seats now."
+              (activeTab === 'upcoming'
+                ? "You don't have any upcoming reservations. Check out the latest movies and book your seats now."
+                : "You don't have any past reservations or expired tickets yet.")
             }
-            actionTitle="Discover Movies"
-            onAction={() => router.replace('/(tabs)')}
+            actionTitle={activeTab === 'upcoming' ? 'Discover Movies' : undefined}
+            onAction={activeTab === 'upcoming' ? () => router.replace('/(tabs)') : undefined}
           />
         ) : (
-          bookings.map((booking) => {
+          displayedBookings.map((booking) => {
             const dateStr = formatShowtimeDate(booking.showtime.startTime);
             const timeStr = formatShowtimeTime(booking.showtime.startTime);
-            const isConfirmed = booking.status === 'confirmed';
+            const statusInfo = getStatusPresentation(booking);
 
             return (
               <Card
                 key={booking.id}
-                variant="goldBorder"
+                variant={statusInfo.isConfirmed ? 'goldBorder' : 'default'}
                 padding="none"
                 style={styles.ticketCard}
               >
                 {/* Cinema & Status Strip */}
                 <View style={styles.ticketHeaderStrip}>
-                  <View style={{ flex: 1 }}>
-                    <Text variant="caption" color="gold" style={styles.cinemaName} numberOfLines={1}>
+                  <View style={{ flex: 1, marginRight: spacing.sm }}>
+                    <Text variant="caption" color="gold" style={styles.cinemaName} numberOfLines={2}>
                       {booking.showtime.cinemaName}
                     </Text>
-                    <Text variant="micro" color="secondary" numberOfLines={1}>
+                    <Text variant="micro" color="secondary" numberOfLines={2}>
                       {booking.showtime.cinemaNeighborhood
                         ? `${booking.showtime.cinemaNeighborhood}, ${booking.showtime.cinemaCity}`
                         : booking.showtime.cinemaCity}{' '}
@@ -159,8 +238,8 @@ export default function MyTicketsScreen() {
                     </Text>
                   </View>
                   <Badge
-                    label={booking.status.toUpperCase()}
-                    variant={isConfirmed ? 'success' : 'warning'}
+                    label={statusInfo.label}
+                    variant={statusInfo.variant}
                   />
                 </View>
 
@@ -215,7 +294,7 @@ export default function MyTicketsScreen() {
                     </Text>
                   </View>
 
-                  {isConfirmed ? (
+                  {statusInfo.isConfirmed ? (
                     <Button
                       title="View QR Pass"
                       onPress={() => setSelectedTicketBooking(booking)}
@@ -225,7 +304,7 @@ export default function MyTicketsScreen() {
                     />
                   ) : (
                     <Button
-                      title="Pending Details"
+                      title="Reservation Details"
                       onPress={() => setSelectedTicketBooking(booking)}
                       variant="outline"
                       size="sm"
@@ -243,7 +322,7 @@ export default function MyTicketsScreen() {
       <BottomSheet
         visible={!!selectedTicketBooking}
         onClose={() => setSelectedTicketBooking(null)}
-        title={selectedTicketBooking?.status === 'confirmed' ? 'Digital Cinema Pass' : 'Booking Details'}
+        title={selectedTicketBooking?.status === 'confirmed' ? 'Digital Cinema Pass' : 'Reservation Details'}
       >
         {selectedTicketBooking && (
           selectedTicketBooking.status === 'confirmed' ? (
@@ -315,24 +394,30 @@ export default function MyTicketsScreen() {
           ) : (
             <View style={styles.pendingPassContainer}>
               <View style={styles.pendingIconBox}>
-                <Ionicons name="time-outline" size={44} color={colors.gold} />
+                <Ionicons
+                  name={selectedTicketBooking.status === 'cancelled' || selectedTicketBooking.status === 'expired' ? 'alert-circle-outline' : 'time-outline'}
+                  size={44}
+                  color={colors.gold}
+                />
               </View>
 
               <Badge
-                label={selectedTicketBooking.status.toUpperCase()}
-                variant={selectedTicketBooking.status === 'pending' ? 'warning' : 'danger'}
+                label={getStatusPresentation(selectedTicketBooking).label}
+                variant={getStatusPresentation(selectedTicketBooking).variant}
               />
 
               <Text variant="h2" align="center" style={{ marginTop: spacing.xs }}>
-                {selectedTicketBooking.status === 'pending'
-                  ? 'Payment Confirmation Pending'
-                  : 'Reservation Inactive'}
+                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now())
+                  ? 'Seats Reserved (Payment Pending)'
+                  : selectedTicketBooking.status === 'cancelled'
+                    ? 'Reservation Cancelled'
+                    : 'Reservation Expired'}
               </Text>
 
               <Text variant="body" color="secondary" align="center" style={styles.pendingDescription}>
-                {selectedTicketBooking.status === 'pending'
-                  ? 'Your seats are temporarily held. Digital admission QR passes are issued exclusively for confirmed bookings once payment is settled.'
-                  : 'This reservation has expired or was cancelled. Admission passes are not active for this booking.'}
+                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now())
+                  ? 'Your seats are temporarily held in the backend database. Digital admission QR passes are issued exclusively for confirmed bookings once payment is settled in Phase 2.'
+                  : 'This reservation is inactive. Contested seats have been returned to the auditorium seat map.'}
               </Text>
 
               {/* Reservation summary */}
@@ -364,7 +449,7 @@ export default function MyTicketsScreen() {
               <View style={styles.pendingNotice}>
                 <Ionicons name="information-circle-outline" size={18} color={colors.gold} />
                 <Text variant="micro" color="secondary" style={{ flex: 1, lineHeight: 16 }}>
-                  Unconfirmed bookings expire automatically to return contested seats to the auditorium seat map.
+                  Unpaid reservations expire automatically to return contested seats to the auditorium seat map.
                 </Text>
               </View>
 
@@ -559,5 +644,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(229, 169, 60, 0.25)',
     width: '100%',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
   },
 });
