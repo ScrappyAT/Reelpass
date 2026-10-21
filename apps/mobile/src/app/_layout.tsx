@@ -6,6 +6,9 @@ import { AuthProvider } from '../context/AuthContext';
 import { LocationProvider } from '../context/LocationContext';
 import { ToastProvider } from '../components/ui/Toast';
 import { colors } from '../theme';
+import * as WebBrowser from 'expo-web-browser';
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function RootLayout() {
   return (
