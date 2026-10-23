@@ -871,11 +871,17 @@ export class PgStore {
   ): Promise<PaymentRecord | null> {
     const res = await this.pool.query<PaymentDbRow>(
       `UPDATE payments
-          SET status = $2,
-              transaction_id = COALESCE($3, transaction_id),
-              raw_response = COALESCE($4, raw_response),
-              failure_reason = COALESCE($5, failure_reason),
-              verified_at = COALESCE($6, CASE WHEN $2 IN ('successful', 'failed', 'cancelled') THEN NOW() ELSE verified_at END)
+          SET status = $2::varchar,
+              transaction_id = COALESCE($3::varchar, transaction_id),
+              raw_response = COALESCE($4::jsonb, raw_response),
+              failure_reason = COALESCE($5::text, failure_reason),
+              verified_at = COALESCE(
+                $6::timestamptz,
+                CASE
+                  WHEN $2::varchar IN ('successful', 'failed', 'cancelled') THEN NOW()
+                  ELSE verified_at
+                END
+              )
         WHERE reference = $1
         RETURNING *`,
       [
