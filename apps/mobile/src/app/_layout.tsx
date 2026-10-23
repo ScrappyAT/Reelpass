@@ -62,6 +62,14 @@ export default function RootLayout() {
                 headerTintColor: colors.gold,
               }}
             />
+            <Stack.Screen
+              name="payment-complete"
+              options={{
+                headerShown: false,
+                title: 'Booking Confirmed',
+                gestureEnabled: false,
+              }}
+            />
           </Stack>
           </ToastProvider>
         </LocationProvider>
