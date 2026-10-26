@@ -29,36 +29,35 @@ The system is designed around the following principles:
 
 ```mermaid
 flowchart TD
-    A["ReelPass Android App<br/>Expo / React Native"] --> B["REST API<br/>Node.js / Express"]
+    A["ReelPass Android App<br/>Expo / React Native (EAS APK)"] --> B["REST API<br/>Node.js / Express (Railway)"]
 
     B --> C["PostgreSQL<br/>Neon (Hosted Database)"]
-    B --> D["Redis<br/>Seat Holds and Cache"]
-    B --> E["Flutterwave<br/>Payment Initialization and Verification"]
-    B --> F["TMDB API<br/>Movie Information"]
+    B --> D["Redis<br/>Redis Cloud (Seat Holds & Cache)"]
+    B --> E["Flutterwave v3<br/>Payment Checkout & Verification"]
+    B --> F["TMDB API<br/>Movie Information & Imagery"]
 
-    B --> G["Booking Expiry Sweeper"]
+    B --> G["Booking Expiry Sweeper<br/>15s Interval"]
     G --> C
+    G --> D
 
-    B --> H["BullMQ Worker<br/>Redis-dependent"]
+    B --> H["BullMQ Worker<br/>Redis Cloud"]
     H --> D
-
-    I["Railway<br/>Intended API Hosting"] -.-> B
 ```
 
 ### Component Responsibilities
 
 | Component | Technology | Responsibility |
 |---|---|---|
-| Mobile application | Expo, React Native, TypeScript | User interface and booking interactions |
-| API server | Node.js, Express, TypeScript | Authentication, business rules, bookings, and payments |
-| Shared package | TypeScript, Zod | Shared types and request validation |
-| Persistent database | PostgreSQL / Neon | Users, movies, cinemas, showtimes, seats, bookings, payments, tickets |
-| Cache and seat holds | Redis | Atomic temporary seat reservations and caching |
-| Payment gateway | Flutterwave | Payment checkout and transaction verification |
-| Movie information | TMDB | Movie catalog information when configured |
-| Background processing | Node.js interval, BullMQ | Booking expiry and queue infrastructure |
+| Mobile application | Expo, React Native, TypeScript | User interface, seat selection, browser checkout, and digital ticket QR passes |
+| API server | Node.js, Express, TypeScript (Railway) | Authentication, business rules, bookings, payment verification, and ticket issuance |
+| Shared package | TypeScript, Zod | Shared interfaces, domain models, and request validation schemas |
+| Persistent database | PostgreSQL / Neon | Users, movies, cinemas, showtimes, seats, bookings, payments, and tickets |
+| Cache and seat holds | Redis Cloud (Redis 7) | Atomic temporary seat holds (Lua script) with 5-minute TTL and caching |
+| Payment gateway | Flutterwave Standard v3 (Sandbox) | In-app browser checkout and server-side transaction verification |
+| Movie information | TMDB | Movie catalog information with offline high-fidelity demo fallback |
+| Background processing | Node.js interval, BullMQ | Automatic booking expiration and hold release |
 
-**Deployment note:** Neon is configured as the hosted PostgreSQL provider. Railway is the intended backend hosting platform, but its availability is currently preventing completion of live deployment verification.
+**Deployment note:** The API is deployed and active on **Railway** (`https://matineeapi-production.up.railway.app/api/v1`), backed by **Neon PostgreSQL** and **Redis Cloud**. Physical Android APK testing has verified the complete booking lifecycle.
 
 ---
 
@@ -639,107 +638,92 @@ These are local development settings and are not the public service ports for Ne
 
 ### Hosted Database
 
-**Neon PostgreSQL** is configured as the hosted persistent database.
+**Neon PostgreSQL** is configured as the hosted persistent database. The backend uses the configured `DATABASE_URL` with connection pooling (`pg`) and SSL enabled.
 
-The backend uses the configured `DATABASE_URL` to connect to Neon.
+### Hosted Cache & Seat Holds
+
+**Redis Cloud** provides the managed Redis 7 instance. It executes atomic Lua scripts for temporary seat holds (5-minute TTL) and caches showtimes and cinema metadata.
 
 ### Backend Hosting
 
-**Railway** is the intended backend deployment platform.
+**Railway** hosts the production Node.js/Express API at:
+`https://matineeapi-production.up.railway.app/api/v1`
 
-The API supports a hosting-provided `PORT` environment variable and listens on `0.0.0.0`.
+The API binds to `0.0.0.0` using the environment-provided `PORT` and connects to Neon and Redis Cloud.
 
-### Deployment Status
+### Deployment Status & Physical Verification
 
-At the time of this documentation update:
+The system is deployed and verified end-to-end:
 
-- The application code and Android build exist.
-- Neon is configured as the PostgreSQL provider.
-- Local booking concurrency tests have recorded passing results.
-- Railway service availability remains an outstanding deployment issue.
-- Live API connectivity and end-to-end Flutterwave sandbox checkout require verification after the backend becomes available.
-
-The application should not be described as fully production-deployed until those checks are completed.
+- **Live Infrastructure**: Railway (API), Neon (PostgreSQL), and Redis Cloud (Cache/Holds) are operational.
+- **Physical Device Validation**: Verified using Android Preview APK build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`.
+- **Audit Booking Record**: Verified reservation `RP-128807` (*Oppenheimer* at *ReelPass Cinemas Lekki*, seat A4, ₦4,500), including Flutterwave sandbox payment, deep-link redirect (`mobile://payment-complete`), server-side verification, ticket issuance, and QR pass rendering.
+- **Hardened Client Fixes**: Cold-boot authentication retry, self-healing demo token acquisition, 12-second database timeout, in-flight request locking, and actionable Retry buttons.
 
 ---
 
-## 16. Scalability Considerations
+## 16. Scalability & Performance Analysis
 
-### Current Implementation
+### Implemented Controls
 
-The application already includes:
+The application implements defense-in-depth concurrency controls:
 
-- PostgreSQL connection pooling.
-- Redis atomic seat holds.
-- Database row-level locking.
-- Unique constraints.
-- Request idempotency.
-- HTTP keep-alive tuning.
-- Background booking expiry processing.
+- PostgreSQL connection pooling with tunable limits.
+- Redis atomic seat holds executing Lua scripts for all-or-nothing acquisition.
+- Database row-level locking (`SELECT ... FOR UPDATE`) during checkout finalization.
+- Unique database constraints (`showtime_id, seat_id`) on `booking_seats` and `tickets`.
+- Idempotent request handling via unique booking references and transaction IDs.
+- HTTP keep-alive connection reuse.
+- Background expiry sweep (every 15s) releasing stale holds.
 
-### Future Improvements
+### Performance Testing Distinction
 
-Potential improvements for larger workloads include:
-
-1. Horizontal scaling of stateless API instances.
-2. Managed Redis for distributed seat holds.
-3. Database connection pooling appropriate to Neon connection limits.
-4. Query optimization and targeted indexes.
-5. Load balancing and request-rate controls.
-6. Monitoring, metrics, and alerting.
-7. Read replicas for read-heavy workloads.
-8. Database partitioning or sharding when actual scale justifies it.
-
-**Sharding is a proposed scaling strategy, not a currently deployed feature.**
-
-Further details belong in `SHARDING.md` and `TRAFFIC.md`.
+- **Local High-Concurrency Stress Test (k6)**:
+  - **500 virtual users (VUs)** contending for **40 contested seats** over 20 seconds.
+  - **Results**: 40 successful bookings (100% inventory), 9,155 expected HTTP 409 conflicts, 0 server errors (5xx), 0 double-bookings, 0 dropped requests.
+  - Mean latency: 582 ms; p95 latency: 2,110 ms.
+- **Hosted Cloud Performance (Railway + Neon)**:
+  - Subject to multi-region cloud latency and serverless database cold-start characteristics.
+  - Multi-relation queries (such as resolving 10 historical reservations in `GET /bookings/my-tickets`) take ~3.8–4.0s over internet transport. The mobile client allocates a 12.0s timeout to comfortably accommodate cloud latency.
 
 ---
 
-## 17. Current Limitations
+## 17. Project Constraints & Disclaimers
 
-The following limitations should be acknowledged:
+The following demonstration boundaries and constraints apply:
 
-- Cinema locations, showtimes, prices, and seat maps include fictional demonstration data.
-- Live payment processing has not yet been validated end-to-end against the hosted backend.
-- Railway availability is currently blocking completion of deployment testing.
-- Redis-dependent background queue processing is not a fully implemented ticket-fulfilment workflow.
-- High-traffic production capacity has not been established by the local 500-VU contention test.
-- Database sharding has not been implemented.
-
-These limitations distinguish the implemented graduation project from a production cinema-ticketing service.
+1. **Flutterwave Sandbox Mode**: All payment processing operates in Flutterwave's sandbox test environment. No real funds, debit cards, or banking transactions are processed.
+2. **Demonstration Catalog Data**: Cinema locations, auditoriums, showtimes, and prices are **fictional sample fixtures** for Nigerian cities (Lagos, Abuja, Port Harcourt, Ibadan). They are not real commercial cinema listings.
+3. **iOS Platform Demonstration**: The iOS client was demonstrated using **Expo Go** and the Metro bundler; it is not published as a standalone App Store / IPA release.
+4. **Sharding Scope**: Database sharding is documented as an architectural scaling strategy for future multi-circuit growth ([SHARDING.md](SHARDING.md)), not an active feature of the single-cluster Neon PostgreSQL database.
 
 ---
 
-## 18. Related Documentation
+## 18. Related Documentation Index
 
-| Document | Purpose |
+| Document | Purpose & Scope |
 |---|---|
-| `ARCHITECTURE.md` | Overall system architecture |
-| `TRAFFIC.md` | Traffic management and load handling |
-| `SHARDING.md` | Database partitioning and future sharding strategy |
-| `COMPONENTS.md` | Reusable mobile UI components |
-| `LEARNING-LOG.md` | Development process and lessons learned |
-| `FLUTTERWAVE_INTEGRATION.md` | Payment integration details |
-| `PERFORMANCE-REPORT.md` | Performance testing summary |
-| `SECURITY.md` | Security considerations |
-| `STATE.md` | Technical implementation state |
+| [System Architecture](ARCHITECTURE.md) | Full system design, components, and data flows |
+| [Current Verified State](STATE.md) | Technical implementation state, deployment inventory, and verification logs |
+| [Learning & Engineering Log](LEARNING-LOG.md) | Development process, milestones, lessons, and submission reflection |
+| [Security Architecture](SECURITY.md) | Security model, webhook verification, and defensive constraints |
+| [Traffic & Concurrency Analysis](TRAFFIC.md) | Traffic modeling, k6 benchmark analysis, and capacity estimation |
+| [Database Sharding Strategy](SHARDING.md) | Architectural proposal for horizontal database partitioning |
+| [Mobile Design System](COMPONENTS.md) | Reusable mobile UI components, design tokens, and state representations |
+| [Payment Integration Specs](FLUTTERWAVE_INTEGRATION.md) | Flutterwave Standard Checkout v3 integration details |
+| [500-VU Load Test Report](../load-tests/REPORT.md) | High-concurrency seat-contention benchmark report and proofs |
 
 ---
 
 ## 19. Conclusion
 
-ReelPass demonstrates a full-stack cinema reservation architecture using Expo React Native, Express, PostgreSQL, Redis, and Flutterwave.
+ReelPass demonstrates a complete, production-style cinema reservation architecture built with Expo React Native, Express, PostgreSQL, Redis, and Flutterwave.
 
-Its central engineering challenge is preventing multiple users from booking the same seat simultaneously.
+Its central engineering objective—preventing double-booking while delivering a seamless mobile reservation and payment experience—has been achieved through atomic Redis holds, PostgreSQL row-level locks, strict database constraints, server-side payment verification, and hardened client-side self-healing.
 
-The implemented solution combines Redis atomic holds, PostgreSQL transactional locks, database uniqueness constraints, idempotent operations, and server-side payment verification.
-
-Local concurrency testing has demonstrated correct seat allocation under a 500-virtual-user workload.
-
-The remaining priorities are restoring hosted backend availability, validating the deployed API, completing Flutterwave sandbox payment testing, and verifying the full Android booking journey.
+The platform is deployed across Railway, Neon, and Redis Cloud, with end-to-end functionality validated on a physical Android device.
 
 **Project:** ReelPass (Matinee)  
 **Repository:** https://github.com/ScrappyAT/Reelpass  
 **Document:** `docs/ARCHITECTURE.md`  
-**Last updated:** October 21, 2026
+**Last updated:** 26 October 2026
