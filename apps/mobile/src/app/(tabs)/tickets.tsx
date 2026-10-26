@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   ScrollView,
@@ -43,29 +43,57 @@ export default function MyTicketsScreen() {
   const [payingBookingId, setPayingBookingId] = useState<string | null>(null);
   const [checkingBookingId, setCheckingBookingId] = useState<string | null>(null);
 
-  const fetchTickets = useCallback(async () => {
-    try {
-      const res = await api.getMyTickets();
-      if (res.success && res.data) {
-        setBookings(res.data);
-        setLoadError(null);
-      } else if (!res.success) {
-        setLoadError(res.error?.message || 'Could not load your tickets.');
-      }
-    } catch (e: any) {
-      console.warn('Failed to load tickets:', e);
-      setLoadError(
-        isApiConnectionError(e)
-          ? 'Cannot reach ReelPass servers. Check connection to view your tickets.'
-          : 'Could not load your tickets.'
-      );
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+  const isFetchingRef = useRef(false);
+
+  const fetchTickets = useCallback(async (isManualRefresh = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
+    if (isManualRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
     }
+    setLoadError(null);
+
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await api.getMyTickets();
+        if (res.success && res.data) {
+          setBookings(res.data);
+          setLoadError(null);
+          break;
+        } else if (!res.success) {
+          if (attempt === maxAttempts) {
+            setLoadError(res.error?.message || 'Could not load your tickets.');
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[MyTickets] Fetch attempt ${attempt} failed:`, e);
+        if (attempt < maxAttempts) {
+          // Pause 800ms before automatic retry for temporary connection latency
+          await new Promise((r) => setTimeout(r, 800));
+        } else {
+          if (isApiConnectionError(e)) {
+            setLoadError(
+              e.reason === 'timed out'
+                ? 'Server response timed out. Tap Retry or pull down to reload.'
+                : 'Cannot reach ReelPass servers. Check connection to view your tickets.'
+            );
+          } else {
+            setLoadError(e.message || 'Could not load your tickets.');
+          }
+        }
+      }
+    }
+
+    isFetchingRef.current = false;
+    setLoading(false);
+    setRefreshing(false);
   }, []);
 
-  // Fetch whenever screen gains focus or auth token initializes
+  // Fetch whenever screen gains focus
   useFocusEffect(
     useCallback(() => {
       if (!authLoading) {
@@ -74,8 +102,9 @@ export default function MyTicketsScreen() {
     }, [authLoading, fetchTickets])
   );
 
+  // If token initializes after initial mount, trigger fetch
   useEffect(() => {
-    if (!authLoading) {
+    if (!authLoading && token) {
       fetchTickets();
     }
   }, [authLoading, token, fetchTickets]);
@@ -84,15 +113,14 @@ export default function MyTicketsScreen() {
   useEffect(() => {
     const sub = Linking.addEventListener('url', (event) => {
       if (event.url && event.url.includes('payment-complete')) {
-        fetchTickets();
+        fetchTickets(true);
       }
     });
     return () => sub.remove();
   }, [fetchTickets]);
 
   const onRefresh = () => {
-    setRefreshing(true);
-    fetchTickets();
+    fetchTickets(true);
   };
 
   const handlePayTicket = async (booking: Booking) => {
@@ -327,8 +355,14 @@ export default function MyTicketsScreen() {
                 ? "You don't have any upcoming reservations. Check out the latest movies and book your seats now."
                 : "You don't have any past reservations or expired tickets yet.")
             }
-            actionTitle={activeTab === 'upcoming' ? 'Discover Movies' : undefined}
-            onAction={activeTab === 'upcoming' ? () => router.replace('/(tabs)') : undefined}
+            actionTitle={loadError ? 'Retry' : activeTab === 'upcoming' ? 'Discover Movies' : undefined}
+            onAction={
+              loadError
+                ? () => fetchTickets(false)
+                : activeTab === 'upcoming'
+                  ? () => router.replace('/(tabs)')
+                  : undefined
+            }
           />
         ) : (
           displayedBookings.map((booking) => {

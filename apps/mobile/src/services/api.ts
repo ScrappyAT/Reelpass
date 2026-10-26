@@ -55,13 +55,15 @@ export const API_BASE_URL = resolveApiBaseUrl();
 /** Thrown when the Express backend cannot be reached at all (timeout / refused). */
 export class ApiConnectionError extends Error {
   endpoint: string;
+  reason: string;
   constructor(endpoint: string, reason: string) {
     super(
       `Cannot reach the ReelPass server for ${endpoint} (${reason}). ` +
-        `Booking requires the backend running on port 4000 — check your Wi-Fi and that the API is started.`
+        `Check your network connection and try again.`
     );
     this.name = 'ApiConnectionError';
     this.endpoint = endpoint;
+    this.reason = reason;
   }
 }
 
@@ -330,8 +332,15 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
-    // Writes (bookings, auth) get a longer timeout; reads fail fast to demo data.
-    const timeoutMs = isWrite ? 10000 : 3500;
+    // Writes, database queries, and transaction endpoints (bookings, payments, auth, showtimes)
+    // require adequate timeout for cloud round-trips and multi-relation PostgreSQL queries on Railway.
+    const isDbEndpoint =
+      endpoint.startsWith('/bookings') ||
+      endpoint.startsWith('/payments') ||
+      endpoint.startsWith('/auth') ||
+      endpoint.startsWith('/showtimes');
+
+    const timeoutMs = isWrite || isDbEndpoint ? 12000 : 4000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
