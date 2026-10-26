@@ -21,33 +21,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Attempt auto-login demo session
-    const initAuth = async () => {
-      try {
-        const res = await api.demoLogin();
-        if (res.success && res.data) {
-          setUser(res.data.user);
-          setToken(res.data.token);
-          api.setToken(res.data.token);
-        }
-      } catch (_err) {
-        // Backend unreachable: allow OFFLINE BROWSING with a local demo profile.
-        // No fake token is issued — booking writes require the real backend.
-        const fallbackUser: User = {
-          id: 'u-1001-demo-user-id',
-          email: 'demo@reelpass.app',
-          fullName: 'Alex Vance',
-          phoneNumber: '+234 803 000 0000',
-          role: 'customer',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        setUser(fallbackUser);
-        setToken(null);
-        api.setToken(null);
-      } finally {
-        setIsLoading(false);
+    // Keep AuthContext in sync if ApiClient performs proactive token renewal / auto-healing
+    api.setTokenListener((newToken, newUser) => {
+      setToken(newToken);
+      if (newUser) {
+        setUser(newUser);
       }
+    });
+
+    // Attempt auto-login demo session with graceful retry on device cold boot
+    const initAuth = async () => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const res = await api.demoLogin();
+          if (res.success && res.data) {
+            setUser(res.data.user);
+            setToken(res.data.token);
+            api.setToken(res.data.token, true);
+            setIsLoading(false);
+            return;
+          }
+        } catch (_err) {
+          if (attempt === 1) {
+            // Brief pause before retry in case device socket is still initializing
+            await new Promise((resolve) => setTimeout(resolve, 600));
+          }
+        }
+      }
+
+      // Backend unreachable: allow OFFLINE BROWSING with a local demo profile.
+      // No fake token is issued — booking writes will proactively acquire the real backend token.
+      const fallbackUser: User = {
+        id: 'u-1001-demo-user-id',
+        email: 'demo@reelpass.app',
+        fullName: 'Alex Vance',
+        phoneNumber: '+234 803 000 0000',
+        role: 'customer',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setUser(fallbackUser);
+      setToken(null);
+      api.setToken(null, true);
+      setIsLoading(false);
     };
 
     initAuth();
@@ -60,7 +76,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.success && res.data) {
         setUser(res.data.user);
         setToken(res.data.token);
-        api.setToken(res.data.token);
+        api.setToken(res.data.token, false);
         return true;
       }
       return false;
@@ -78,7 +94,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.success && res.data) {
         setUser(res.data.user);
         setToken(res.data.token);
-        api.setToken(res.data.token);
+        api.setToken(res.data.token, true);
         return true;
       }
       return false;
@@ -96,7 +112,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.success && res.data) {
         setUser(res.data.user);
         setToken(res.data.token);
-        api.setToken(res.data.token);
+        api.setToken(res.data.token, false);
         return true;
       }
       return false;
@@ -110,7 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = () => {
     setUser(null);
     setToken(null);
-    api.setToken(null);
+    api.setToken(null, false);
   };
 
   return (
@@ -118,7 +134,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         token,
-        isAuthenticated: !!user,
+        isAuthenticated: !!user && !!token,
         isLoading,
         signIn,
         demoSignIn,

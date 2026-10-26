@@ -256,18 +256,69 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 class ApiClient {
   private token: string | null = null;
+  private isDemoUser: boolean = true;
+  private tokenListener?: (token: string | null, user?: User | null) => void;
 
-  setToken(token: string | null) {
+  setToken(token: string | null, isDemo: boolean = true) {
     this.token = token;
+    this.isDemoUser = isDemo;
+    if (this.tokenListener) {
+      this.tokenListener(token);
+    }
   }
 
   getToken(): string | null {
     return this.token;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+  setTokenListener(listener: (token: string | null, user?: User | null) => void) {
+    this.tokenListener = listener;
+  }
+
+  /**
+   * Proactively acquire or refresh demo session credentials from the backend.
+   * Completely self-healing against cold-start network dropouts or server restarts.
+   */
+  async refreshDemoToken(): Promise<boolean> {
+    if (!this.isDemoUser) return false;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${API_BASE_URL}/auth/demo-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const data: ApiResponse<AuthResponse> = await res.json();
+        if (data.success && data.data?.token) {
+          this.token = data.data.token;
+          if (this.tokenListener) {
+            this.tokenListener(data.data.token, data.data.user);
+          }
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async request<T>(endpoint: string, options: RequestInit = {}, isRetry: boolean = false): Promise<ApiResponse<T>> {
     const method = (options.method || 'GET').toUpperCase();
     const isWrite = WRITE_METHODS.has(method);
+
+    // Proactively acquire demo token for protected booking and payment routes if missing
+    if (
+      !this.token &&
+      this.isDemoUser &&
+      !endpoint.startsWith('/auth') &&
+      (endpoint.startsWith('/bookings') || endpoint.startsWith('/payments'))
+    ) {
+      await this.refreshDemoToken();
+    }
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -336,6 +387,20 @@ class ApiClient {
           message: `Unexpected server response (${response.status}). Please try again.`,
         },
       };
+    }
+
+    // Auto-heal on 401 UNAUTHORIZED or INVALID_TOKEN for demo sessions
+    if (
+      !isRetry &&
+      this.isDemoUser &&
+      !endpoint.startsWith('/auth') &&
+      data.error &&
+      (data.error.code === 'UNAUTHORIZED' || data.error.code === 'INVALID_TOKEN' || response.status === 401)
+    ) {
+      const refreshed = await this.refreshDemoToken();
+      if (refreshed) {
+        return this.request<T>(endpoint, options, true);
+      }
     }
 
     if (__DEV__ && !response.ok) {

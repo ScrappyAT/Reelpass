@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   ScrollView,
@@ -14,17 +14,42 @@ import {
   Card,
   Badge,
   Button,
+  useToast,
 } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user, signOut, isAuthenticated } = useAuth();
+  const { user, token, signOut, demoSignIn, isAuthenticated } = useAuth();
+  const { showToast } = useToast();
+  const [connectingDemo, setConnectingDemo] = useState(false);
 
   const handleSignOut = () => {
     signOut();
     router.replace('/onboarding');
+  };
+
+  const handleConnectDemo = async () => {
+    setConnectingDemo(true);
+    try {
+      const ok = await demoSignIn();
+      if (ok) {
+        showToast({
+          title: 'Demo Session Active',
+          message: 'Connected to live ReelPass booking server.',
+          type: 'gold',
+        });
+      } else {
+        showToast({
+          title: 'Connection Error',
+          message: 'Could not reach ReelPass server. Check Wi-Fi or cellular network.',
+          type: 'error',
+        });
+      }
+    } finally {
+      setConnectingDemo(false);
+    }
   };
 
   return (
@@ -58,7 +83,10 @@ export default function ProfileScreen() {
               <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
                 <Badge label="GOLD TIER MEMBER" variant="gold" />
                 {user?.id === 'u-1001-demo-user-id' && (
-                  <Badge label="DEMO ACCOUNT" variant="warning" />
+                  <Badge
+                    label={token ? 'DEMO ACCOUNT (ACTIVE)' : 'DEMO (OFFLINE PREVIEW)'}
+                    variant={token ? 'warning' : 'outline'}
+                  />
                 )}
               </View>
             </View>
@@ -97,9 +125,11 @@ export default function ProfileScreen() {
             <Ionicons name="information-circle-outline" size={16} color={colors.gold} />
             <Text variant="micro" color="secondary" style={styles.demoBannerText}>
               <Text variant="micro" color="gold" style={{ fontWeight: '700' }}>
-                Demonstration Profile:
+                {token ? 'Active Demo Session:' : 'Offline Demo Mode:'}
               </Text>{' '}
-              Pre-configured sample account with simulated membership and loyalty data for previewing ReelPass features.
+              {token
+                ? 'Pre-configured sample account with simulated VIP tier. Live ticket reservations and Flutterwave sandbox payments are fully active.'
+                : 'Showing local demo preview. Tap "Activate Demo Session" below or proceed to seat booking to automatically connect.'}
             </Text>
           </View>
         )}
@@ -156,7 +186,7 @@ export default function ProfileScreen() {
             <View style={styles.menuItemContent}>
               <Text variant="bodyBold">Payment Methods</Text>
               <Text variant="caption" color="secondary">
-                Flutterwave Sandbox (Phase 2 Integration)
+                Flutterwave Sandbox • Test Payments
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
@@ -186,7 +216,7 @@ export default function ProfileScreen() {
           </Text>
         </View>
 
-        {/* Sign Out Button */}
+        {/* Sign Out / Sign In / Demo Session Actions */}
         <View style={styles.actions}>
           {isAuthenticated ? (
             <Button
@@ -196,6 +226,22 @@ export default function ProfileScreen() {
               size="md"
               style={styles.signOutButton}
             />
+          ) : user?.id === 'u-1001-demo-user-id' ? (
+            <View style={{ gap: spacing.sm, width: '100%' }}>
+              <Button
+                title={connectingDemo ? 'Connecting Live Session...' : 'Activate Demo Session'}
+                onPress={handleConnectDemo}
+                variant="primary"
+                size="md"
+                disabled={connectingDemo}
+              />
+              <Button
+                title="Sign In with Another Account"
+                onPress={() => router.push('/auth/login')}
+                variant="outline"
+                size="md"
+              />
+            </View>
           ) : (
             <Button
               title="Sign In with Account"
