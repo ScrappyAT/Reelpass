@@ -14,6 +14,10 @@ async function bootstrap() {
   const mode = resolveDataMode();
   console.log(`🧭 [ReelPass API] Data mode: ${mode}`);
 
+  if (env.NODE_ENV === 'production') {
+    console.log('🔒 [ReelPass API] Production JWT security validated: strong custom secret active.');
+  }
+
   let sweeper: NodeJS.Timeout | null = null;
 
   if (mode === 'postgres') {

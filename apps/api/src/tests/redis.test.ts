@@ -81,6 +81,38 @@ test('parseRedisConfig detects Upstash HTTPS REST URL and returns helpful guidan
   assert.match(config.error!, /rediss:\/\//, 'Error should guide user to rediss:// format');
 });
 
+test('parseRedisConfig correctly configures Redis Cloud TLS endpoint with strict certificate validation enabled by default', () => {
+  const redisCloudUrl = 'rediss://default:redisCloudSecretPass999@redis-13768.c289.us-central1-1-2.gce.redns.redis-cloud.com:13768';
+  const config = parseRedisConfig(redisCloudUrl);
+
+  assert.ok(config, 'Redis Cloud configuration should parse cleanly');
+  assert.equal(config.isTls, true, 'rediss:// scheme must activate TLS');
+  assert.equal(config.hostname, 'redis-13768.c289.us-central1-1-2.gce.redns.redis-cloud.com');
+  assert.equal(config.port, 13768);
+  assert.equal(config.sanitizedHost, 'redis-13768.c289.us-central1-1-2.gce.redns.redis-cloud.com:13768');
+  assert.ok(!config.sanitizedHost.includes('redisCloudSecretPass999'), 'sanitizedHost must never expose Redis Cloud password');
+  assert.equal((config.options.tls as any)?.rejectUnauthorized, true, 'rejectUnauthorized must default to true for secure TLS certificate validation');
+  assert.equal((config.options.tls as any)?.servername, 'redis-13768.c289.us-central1-1-2.gce.redns.redis-cloud.com', 'SNI servername must match Redis Cloud hostname');
+});
+
+test('parseRedisConfig honors REDIS_REJECT_UNAUTHORIZED=false opt-out for custom environments', () => {
+  const originalEnv = process.env.REDIS_REJECT_UNAUTHORIZED;
+  try {
+    process.env.REDIS_REJECT_UNAUTHORIZED = 'false';
+    const redisCloudUrl = 'rediss://default:secret@redis-13768.c289.us-central1-1-2.gce.redns.redis-cloud.com:13768';
+    const config = parseRedisConfig(redisCloudUrl);
+    assert.ok(config);
+    assert.equal(config.isTls, true);
+    assert.equal((config.options.tls as any)?.rejectUnauthorized, false, 'Explicit opt-out must set rejectUnauthorized to false');
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.REDIS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.REDIS_REJECT_UNAUTHORIZED = originalEnv;
+    }
+  }
+});
+
 test('getSanitizedRedisHost never leaks passwords or usernames', () => {
   const sanitized = getSanitizedRedisHost('rediss://default:ultra_secret_token@my-redis.upstash.io:6379');
   assert.equal(sanitized, 'my-redis.upstash.io:6379');

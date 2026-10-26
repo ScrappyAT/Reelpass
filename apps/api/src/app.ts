@@ -18,7 +18,10 @@ import { resolveDataMode } from './config/dataMode';
 const app = express();
 
 // Base Middlewares
-app.use(cors({ origin: env.CORS_ORIGIN }));
+const corsOrigins = env.CORS_ORIGIN.includes(',')
+  ? env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
+  : env.CORS_ORIGIN;
+app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
 app.use(requestIdMiddleware);
 
@@ -121,6 +124,10 @@ app.get(['/health', `${env.API_PREFIX}/health`], async (req, res) => {
 });
 
 app.post(['/health/init', `${env.API_PREFIX}/health/init`], async (req, res) => {
+  if (env.NODE_ENV === 'production' && req.headers['x-admin-key'] !== env.JWT_SECRET) {
+    return res.status(403).json({ success: false, error: 'Forbidden' });
+  }
+
   try {
     const { runMigrations } = await import('./db/migrate');
     const { seedPgDatabase } = await import('./db/seedPg');
@@ -128,7 +135,11 @@ app.post(['/health/init', `${env.API_PREFIX}/health/init`], async (req, res) => 
     await seedPgDatabase();
     return res.json({ success: true, applied, message: 'Database migrations and seed completed' });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message, stack: err.stack });
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+      ...(env.NODE_ENV !== 'production' ? { stack: err.stack } : {}),
+    });
   }
 });
 

@@ -127,23 +127,23 @@ apps/mobile/
 ### 1. Resilient Payment Redirection on Standalone Android
 - **Problem**: In standalone Android builds, redirecting from the Flutterwave browser window back to `mobile://payment-complete` initially produced an `"Unmatched Route"` error because Expo Router required an explicit root route.
 - **Solution**: 
-  - Registered the explicit route [`apps/mobile/src/app/payment-complete.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/app/payment-complete.tsx).
-  - Enforced scheme handling in [`app.json`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/app.json) with `scheme: "mobile"`.
+  - Registered the explicit route [`src/app/payment-complete.tsx`](src/app/payment-complete.tsx).
+  - Enforced scheme handling in [`app.json`](app.json) with `scheme: "mobile"`.
   - Added `WebBrowser.maybeCompleteAuthSession()` in root layout to gracefully close in-app browser sessions upon deep-link interception.
   - Implemented client verification that extracts `tx_ref`, queries `/payments/verify`, updates the booking state, and displays the confirmed pass.
 
 ### 2. Cold-Start Authentication Self-Healing
 - **Problem**: When launched on a physical Android device, initial network socket initialization latency caused `initAuth()` to fail, leaving the app in a "phantom" session without a valid token.
 - **Solution**:
-  - Implemented 2-attempt cold-boot retry with backoff in [`AuthContext.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/context/AuthContext.tsx).
-  - Added `refreshDemoToken()` in [`ApiClient`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/services/api.ts) to proactively fetch a fresh demo token before executing protected booking or payment requests if the token is absent.
+  - Implemented 2-attempt cold-boot retry with backoff in [`src/context/AuthContext.tsx`](src/context/AuthContext.tsx).
+  - Added `refreshDemoToken()` in [`src/services/api.ts`](src/services/api.ts) to proactively fetch a fresh demo token before executing protected booking or payment requests if the token is absent.
   - Added a token listener so `AuthContext` React state automatically synchronizes whenever `ApiClient` acquires credentials.
 
 ### 3. My Tickets Latency Resilience & In-Flight Locking
 - **Problem**: Resolving historical bookings from cloud PostgreSQL on Railway took ~3.8–4.0s, triggering the mobile client's default 3.5s timeout and displaying `"Tickets Unavailable"`. Furthermore, concurrent mount hooks fired duplicate backend queries.
 - **Solution**:
   - Increased timeout for database endpoints (`/bookings`, `/payments`, `/auth`, `/showtimes`) from 3.5s to **12.0s**.
-  - Added `isFetchingRef` lock in [`tickets.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/app/(tabs)/tickets.tsx) to prevent concurrent simultaneous queries.
+  - Added `isFetchingRef` lock in [`src/app/(tabs)/tickets.tsx`](src/app/(tabs)/tickets.tsx) to prevent concurrent simultaneous queries.
   - Added automatic 2-attempt retry with backoff for transient timeouts.
   - Added an interactive **"Retry"** button in `EmptyState` allowing users to reload reservations on demand.
 

@@ -17,7 +17,8 @@
 The standalone Android APK has been verified end-to-end on a physical device, covering user authentication, seat selection, real-time seat locks, Flutterwave sandbox checkout, deep-link return navigation, payment reconciliation, digital ticket retrieval, and scannable QR pass generation.
 
 - **Download Tested Android APK**: [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c)
-- **Commit Reference**: `d5df0b9` (Final verification and stability release)
+- **Git Commit Reference**: `f55ce71` (Tested Android build code) / `a198fb8` (Submission release)
+- **EAS Build ID**: `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`
 - **iOS Demonstration**: Demonstrated via **Expo Go** and Metro bundler during development; not published as a standalone App Store / IPA release.
 
 ---

@@ -67,16 +67,16 @@ My Tickets Retrieval:   Confirmed, rendered in "Upcoming" tab with scannable QR 
 ### 1. Standalone Android Payment Redirect (`mobile://payment-complete`)
 - **Issue**: In the standalone Android APK, completing checkout in the browser redirected to `mobile://payment-complete` but resulted in an Expo Router `"Unmatched Route"` error.
 - **Resolution**:
-  - Implemented the explicit route [`apps/mobile/src/app/payment-complete.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/app/payment-complete.tsx) to handle deep links.
-  - Added `scheme: "mobile"` in [`app.json`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/app.json).
+  - Implemented the explicit route [`apps/mobile/src/app/payment-complete.tsx`](../apps/mobile/src/app/payment-complete.tsx) to handle deep links.
+  - Added `scheme: "mobile"` in [`apps/mobile/app.json`](../apps/mobile/app.json).
   - Added `WebBrowser.maybeCompleteAuthSession()` in the root layout to cleanly dismiss in-app browser windows upon receiving the callback.
   - Reused server verification to confirm the booking and present the digital pass.
 
 ### 2. Cold-Start Authentication Recovery & Self-Healing
 - **Issue**: On a physical Android device cold boot, cellular/Wi-Fi socket initialization delays caused `initAuth()` to fail, leaving the app in a "phantom" session (displaying Alex Vance but with `token = null`), which returned `UNAUTHORIZED` when attempting to reserve seats.
 - **Resolution**:
-  - Added a 2-attempt cold-boot retry with backoff in [`AuthContext.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/context/AuthContext.tsx).
-  - Implemented `refreshDemoToken()` in [`ApiClient`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/services/api.ts) to proactively fetch a fresh demo token before executing protected booking or payment endpoints.
+  - Added a 2-attempt cold-boot retry with backoff in [`apps/mobile/src/context/AuthContext.tsx`](../apps/mobile/src/context/AuthContext.tsx).
+  - Implemented `refreshDemoToken()` in [`apps/mobile/src/services/api.ts`](../apps/mobile/src/services/api.ts) to proactively fetch a fresh demo token before executing protected booking or payment endpoints.
   - Added a token listener synchronizing React state with `ApiClient` credentials.
   - Configured automatic 401 interception to re-authenticate and retry the operation seamlessly.
   - Updated the Profile screen to differentiate `DEMO ACCOUNT (ACTIVE)` from `DEMO (OFFLINE PREVIEW)` and added a manual "Activate Demo Session" button.
@@ -85,15 +85,15 @@ My Tickets Retrieval:   Confirmed, rendered in "Upcoming" tab with scannable QR 
 - **Issue**: Tapping "View in My Tickets" displayed `"Tickets Unavailable — Cannot reach ReelPass servers"`.
 - **Root Cause**: Resolving 10 historical bookings from cloud PostgreSQL on Railway required ~3.8–4.0s, which exceeded the client's default 3.5s timeout. Furthermore, concurrent lifecycle hooks fired duplicate parallel requests that increased database contention to 4.5s.
 - **Resolution**:
-  - Increased timeout for database-backed endpoints (`/bookings`, `/payments`, `/auth`, `/showtimes`) from 3.5s to **12.0s** in [`api.ts`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/services/api.ts).
-  - Implemented an `isFetchingRef` lock in [`tickets.tsx`](file:///c:/Users/HP/Desktop/matinee/apps/mobile/src/app/(tabs)/tickets.tsx) to eliminate duplicate simultaneous queries.
+  - Increased timeout for database-backed endpoints (`/bookings`, `/payments`, `/auth`, `/showtimes`) from 3.5s to **12.0s** in [`apps/mobile/src/services/api.ts`](../apps/mobile/src/services/api.ts).
+  - Implemented an `isFetchingRef` lock in [`apps/mobile/src/app/(tabs)/tickets.tsx`](../apps/mobile/src/app/(tabs)/tickets.tsx) to eliminate duplicate simultaneous queries.
   - Added an automatic 2-attempt retry with an 800ms backoff for transient latency.
   - Added an actionable **"Retry"** button in `EmptyState` when ticket retrieval encounters an error.
 
 ### 4. Database Type Casting & SQL Parameter Handling
 - **Issue**: Flutterwave payment verification encountered a PostgreSQL parameterized query syntax error when updating payment records.
 - **Resolution**:
-  - Updated SQL parameter handling in [`apps/api/src/db/pgStore.ts`](file:///c:/Users/HP/Desktop/matinee/apps/api/src/db/pgStore.ts) to cast raw payment response JSON payloads (`$5::jsonb`) and format integer kobo columns correctly.
+  - Updated SQL parameter handling in [`apps/api/src/db/pgStore.ts`](../apps/api/src/db/pgStore.ts) to cast raw payment response JSON payloads (`$5::jsonb`) and format integer kobo columns correctly.
 
 ---
 

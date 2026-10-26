@@ -145,7 +145,8 @@ export function parseRedisConfig(raw?: string): ParsedRedisConfig | null {
   };
 
   if (isTls) {
-    const rejectUnauthorized = process.env.REDIS_REJECT_UNAUTHORIZED === 'true';
+    // Default to true for secure TLS certificate validation; allow explicit opt-out via REDIS_REJECT_UNAUTHORIZED=false
+    const rejectUnauthorized = process.env.REDIS_REJECT_UNAUTHORIZED !== 'false';
     options.tls = {
       rejectUnauthorized,
       servername: host,
