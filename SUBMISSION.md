@@ -22,7 +22,7 @@
 | **Security Audit Report** | Completed | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) |
 | **Learning & Engineering Log** | Completed | [docs/LEARNING-LOG.md](docs/LEARNING-LOG.md) |
 | **Current Operational State** | Completed | [docs/STATE.md](docs/STATE.md) |
-| **Demonstration Video** | *Pending Recording* | *Pending (To be recorded on physical device; will be linked upon upload)* |
+| **Demonstration Video** | Completed | [Demo Video](https://drive.google.com/file/d/1QA6IZhR8Ic2HOKR-vXoVW-sP6RIQ6ep1/view?usp=sharing) |
 | **LinkedIn Reflection Post** | Published | [LinkedIn Engineering Reflection](https://lnkd.in/p/euVj5q72) |
 
 ---
