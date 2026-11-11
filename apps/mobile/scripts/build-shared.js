@@ -6,6 +6,16 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+if (process.env.EAS_BUILD_PROFILE === 'staging') {
+  const endpoint = URL.parse(process.env.EXPO_PUBLIC_API_URL ?? '');
+  if (endpoint?.protocol !== 'https:' || !/^\/api\/v1\/?$/.test(endpoint.pathname)
+      || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+      || endpoint.hostname === 'matineeapi-production.up.railway.app') {
+    console.error('The staging build requires EXPO_PUBLIC_API_URL for the staging HTTPS /api/v1 endpoint.');
+    process.exit(1);
+  }
+}
+
 // Locate monorepo root (3 levels up from apps/mobile/scripts or 2 levels from apps/mobile)
 let monorepoRoot = path.resolve(__dirname, '../../..');
 if (!fs.existsSync(path.join(monorepoRoot, 'packages/shared'))) {

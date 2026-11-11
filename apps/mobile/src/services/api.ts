@@ -317,7 +317,7 @@ class ApiClient {
       !this.token &&
       this.isDemoUser &&
       !endpoint.startsWith('/auth') &&
-      (endpoint.startsWith('/bookings') || endpoint.startsWith('/payments'))
+      (endpoint.startsWith('/bookings') || endpoint.startsWith('/payments') || endpoint.endsWith('/admission'))
     ) {
       await this.refreshDemoToken();
     }
@@ -372,7 +372,7 @@ class ApiClient {
 
       // Booking writes and booking reads MUST hit a reachable backend.
       // We never silently simulate a reservation.
-      if (isWrite || endpoint.startsWith('/bookings') || endpoint.startsWith('/showtimes') || endpoint.startsWith('/auth')) {
+      if (isWrite || endpoint.startsWith('/bookings') || endpoint.startsWith('/showtimes') || endpoint.startsWith('/payments') || endpoint.startsWith('/auth')) {
         if (__DEV__) console.warn(`❌ [API dev] ${endpoint} unreachable: ${reason}`);
         throw new ApiConnectionError(endpoint, reason);
       }
@@ -524,16 +524,27 @@ class ApiClient {
     return this.request<Showtime>(`/showtimes/${id}`);
   }
 
+  async getShowtimeAdmission(showtimeId: string) {
+    return this.request<{ admitted: boolean; position: number; retryAfter: number }>(
+      '/showtimes/' + encodeURIComponent(showtimeId) + '/admission', { method: 'POST' },
+    );
+  }
+
   async getShowtimeSeats(showtimeId: string) {
     return this.request<SeatMapLayout>(`/showtimes/${showtimeId}/seats`);
   }
 
   // --- Booking APIs ---
-  async createBooking(showtimeId: string, seatIds: string[]) {
+  async createBooking(showtimeId: string, seatIds: string[], key?: string) {
     return this.request<Booking>('/bookings', {
       method: 'POST',
+      headers: key ? { 'Idempotency-Key': key } : undefined,
       body: JSON.stringify({ showtimeId, seatIds }),
     });
+  }
+
+  async cancelBooking(bookingId: string) {
+    return this.request<Booking>('/bookings/' + encodeURIComponent(bookingId) + '/cancel', { method: 'POST' });
   }
 
   async getMyTickets() {
@@ -545,18 +556,27 @@ class ApiClient {
   }
 
   // --- Payment APIs ---
-  async initializePayment(bookingId: string, redirectUrl?: string) {
+  async initializePayment(bookingId: string) {
     return this.request<PaymentInitResult>('/payments/initialize', {
       method: 'POST',
-      body: JSON.stringify({ bookingId, redirectUrl }),
+      headers: { 'Idempotency-Key': bookingId },
+      body: JSON.stringify({ bookingId }),
     });
   }
 
   async verifyPayment(params: { bookingId?: string; reference?: string; transactionId?: string }) {
-    return this.request<PaymentVerifyResult>('/payments/verify', {
+    let result = await this.request<PaymentVerifyResult>('/payments/verify', {
       method: 'POST',
       body: JSON.stringify(params),
     });
+    // The server worker can finish shortly after the browser returns.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const data = result.data;
+      if (!result.success || !data || data.isConfirmed || data.booking.status !== 'pending') break;
+      await new Promise<void>(resolve => setTimeout(resolve, 1500));
+      result = await this.getPaymentStatus(data.booking.id);
+    }
+    return result;
   }
 
   async getPaymentStatus(bookingId: string) {

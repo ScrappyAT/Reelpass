@@ -1,0 +1,35 @@
+{
+  "recordedAt": "2026-11-11T09:26:35.926Z",
+  "metrics": {
+    "virtualUsers": 500,
+    "contestedSeats": 50,
+    "requests": 500,
+    "warmupErrors": 0,
+    "holdsCreated": 50,
+    "expectedSeatConflicts": 450,
+    "unexpectedResponses": 0,
+    "transportErrors": 0,
+    "serverErrors": 0,
+    "admissionOrRateRejected": 0,
+    "unexpectedHttpRate": 0,
+    "meanMs": 1066.6151212000009,
+    "p95Ms": 1453.804945,
+    "dispatchP95Ms": 37,
+    "dispatchMaxMs": 38
+  },
+  "database": {
+    "reservations": 50,
+    "held": 50,
+    "duplicate_seat_claims": 0,
+    "tickets": 0,
+    "captures": 0
+  },
+  "environment": "Disposable local PostgreSQL 16 and Redis 7; 500 distinct synthetic accounts",
+  "loadTransport": "native k6 over loopback",
+  "policy": {
+    "capacity": 500,
+    "admissionsPerSecond": 500,
+    "ipBudgetMultiplier": 10
+  },
+  "passed": true
+}

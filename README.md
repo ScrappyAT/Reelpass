@@ -12,11 +12,15 @@
 
 ---
 
-## 📱 Final Tested Android Build
+The graduation candidate passed local verification. Its 500-user/50-seat run recorded 50 holds, 450 expected conflicts, zero duplicate seat claims and zero unexpected errors at 1,453.8 ms p95. Hosted staging and the replacement Android download are pending. [Release checklist](docs/RELEASE-CHECKLIST.md) · [Load report](load-tests/GRADUATION-500X50.md) · [Submission evidence](SUBMISSION.md)
+
+[Demo video](https://drive.google.com/file/d/1QA6IZhR8Ic2HOKR-vXoVW-sP6RIQ6ep1/view) · [Figma designs](https://www.figma.com/design/Gh0kzUtGs4547W19iH4WVa/Dev-and-Design-Bootcamp-Learning-Phase) · [LinkedIn reflection](https://lnkd.in/p/euVj5q72)
+
+## 📱 Historical Android Build
 
 The standalone Android APK has been verified end-to-end on a physical device, covering user authentication, seat selection, real-time seat locks, Flutterwave sandbox checkout, deep-link return navigation, payment reconciliation, digital ticket retrieval, and scannable QR pass generation.
 
-- **Download Tested Android APK**: [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c)
+- **Historical EAS record (download expired)**: [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c)
 - **Git Commit Reference**: `f55ce71` (Tested Android build code) / `a198fb8` (Submission release)
 - **EAS Build ID**: `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`
 - **iOS Demonstration**: Demonstrated via **Expo Go** and Metro bundler during development; not published as a standalone App Store / IPA release.
@@ -33,7 +37,7 @@ The standalone Android APK has been verified end-to-end on a physical device, co
 
 ## 🚀 Live Cloud Infrastructure
 
-The application is deployed to production cloud infrastructure:
+The previous release is hosted on the infrastructure below. The graduation branch has not been deployed.
 
 | Component | Provider / Service | Details / Endpoint |
 |---|---|---|
@@ -46,9 +50,9 @@ The application is deployed to production cloud infrastructure:
 
 ---
 
-## ✨ Verified End-to-End User Journey (Booking `RP-128807`)
+## ✨ October Device Evidence (Booking `RP-128807`)
 
-The entire reservation and payment lifecycle was validated on the physical Android APK against the live cloud backend:
+The diagram records the October Android verification. For the graduation candidate's verified-webhook and worker flow, see the [current architecture](docs/ARCHITECTURE.md#9-flutterwave-payment-architecture).
 
 ```mermaid
 sequenceDiagram
@@ -132,7 +136,7 @@ A high-concurrency seat-contention benchmark was conducted using **k6** against 
 |---|---|---|
 | **Virtual Users (VUs)** | **500 concurrent VUs** | 50 unique user accounts contending simultaneously |
 | **Contested Inventory** | **40 total seats** | High-contention bottleneck scenario |
-| **Successful Bookings** | **40 confirmed** | Exactly 100% of available inventory allocated |
+| **Successful Bookings** | **40 pending reservations** | Exactly 100% of available inventory allocated |
 | **Expected Conflicts** | **9,155 HTTP 409s** | Correct business rejections; seats held by other users |
 | **Double Bookings** | **0 (Zero)** | Mathematically verified across database tables |
 | **Server Errors (5xx)** | **0 (Zero)** | Fail-safe error handling under maximum saturation |
@@ -236,13 +240,15 @@ Key defaults in `.env`:
 
 ### 4. Run Migrations & Seed Database
 ```bash
-npm run migrate:pg --workspace=@matinee/api
-npm run seed:pg --workspace=@matinee/api
+# On a new or explicitly approved database only:
+npm run db:setup --workspace=@matinee/api
 ```
 
 ### 5. Launch Backend API
 ```bash
 npm run dev --workspace=@matinee/api
+# In a separate terminal:
+npm run dev:worker --workspace=@matinee/api
 ```
 The API starts on `http://localhost:4000/api/v1`. Verify with:
 ```bash
@@ -259,15 +265,15 @@ Press `a` to open in an Android Emulator, or scan the QR code with **Expo Go** o
 
 ## 🧪 Testing Suites
 
-### 1. Unit & Memory Tests (15 tests)
+### 1. Unit & Memory Tests
 ```bash
 npm run test --workspace=@matinee/api
 ```
 Validates input schemas, price calculations, cancellation rules, and fallback mechanisms without external dependencies.
 
-### 2. PostgreSQL Concurrency Tests (6 suites)
+### 2. Disposable PostgreSQL and Redis Integration Tests
 ```bash
-npm run test:pg --workspace=@matinee/api
+pwsh -NoProfile -File scripts/test-isolated.ps1
 ```
 Validates transactional row locks, seat hold releases, idempotent confirmations, and constraint enforcement against live PostgreSQL.
 
@@ -275,7 +281,7 @@ Validates transactional row locks, seat hold releases, idempotent confirmations,
 ```bash
 node --import tsx --test apps/api/src/tests/flutterwave.test.ts
 ```
-Validates checkout creation, webhook signature checking (`timingSafeEqual`), replay attacks, and status polling.
+Checks strict gateway values, signature comparison and fail-closed verification. The disposable suite exercises checkout, queued settlement and refunds.
 
 ### 4. TypeScript Workspace Verification
 ```bash
@@ -297,6 +303,10 @@ Executes `tsc --noEmit` across `@matinee/shared`, `@matinee/api`, and `@matinee/
 - [Load Test Report](load-tests/REPORT.md) — Complete 500-VU benchmark results and verification proofs.
 
 ---
+
+## Store billing
+
+ReelPass sells admission to a physical cinema screening. The QR code represents access to an in-person service; it does not unlock digital content inside the app. [Apple’s outside-the-app services rule](https://developer.apple.com/app-store/review/guidelines/#goods-and-services) and [Google Play’s physical services exception](https://support.google.com/googleplay/android-developer/answer/9858738) distinguish these transactions from purchases of in-app digital content. The assessment build uses Flutterwave sandbox checkout.
 
 ## ⚖️ License & Attribution
 

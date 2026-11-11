@@ -1,5 +1,7 @@
 # ReelPass (Matinee) — System State & Operational Verification
 
+> This document includes October release evidence. For the current branch and verification, see [graduation implementation](GRADUATION-IMPLEMENTATION.md).
+
 **Repository:** `ScrappyAT/Reelpass`  
 **Current Milestone:** Final Documentation & Submission Closeout  
 **Verification Date:** 26 October 2026  

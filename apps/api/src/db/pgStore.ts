@@ -1,4 +1,8 @@
-import { Pool, PoolClient } from 'pg';
+import { Pool, PoolClient, QueryResultRow } from 'pg';
+import { randomUUID } from 'node:crypto';
+import { env } from '../config/env';
+import { seatHolds } from '../redis/seatHolds';
+import { bookingFingerprint, releasePendingSeats } from './bookingHolds';
 import {
   Booking,
   BookingStatus,
@@ -14,7 +18,8 @@ import {
   User,
   UserRole,
 } from '@matinee/shared';
-import { getDbPool } from './pool';
+import { getCatalogReadPool, getDbPool } from './pool';
+import { cache } from '../redis/client';
 import { withTransaction } from './migrate';
 
 export interface UserRecord extends User {
@@ -132,6 +137,9 @@ export interface BookingDbRow {
   user_id: string;
   showtime_id: string;
   total_amount_kobo: number | string;
+  service_fee_kobo: number;
+  hold_token: string | null;
+  request_fingerprint: string | null;
   currency: string;
   status: string;
   payment_status: string;
@@ -239,6 +247,17 @@ export class PgStore {
     return this.pool;
   }
 
+  // Only stable public metadata can use a replica. Reservation, inventory
+  // and payment reads always use the primary, including after writes.
+  private async readCatalog<T extends QueryResultRow>(sql: string, params: unknown[] = []) {
+    const replica = getCatalogReadPool();
+    if (replica) {
+      try { return await replica.query<T>(sql, params); }
+      catch { console.warn(JSON.stringify({ event: 'catalog_replica_fallback' })); }
+    }
+    return this.pool.query<T>(sql, params);
+  }
+
   // ------------------------------------------------------------------ users
   async findUserByEmail(email: string): Promise<UserRecord | null> {
     const res = await this.pool.query<UserDbRow>('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
@@ -282,13 +301,13 @@ export class PgStore {
   // --------------------------------------------------------------- catalog
   async listCinemas(city?: string): Promise<Cinema[]> {
     const res = city
-      ? await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas WHERE LOWER(city) = LOWER($1) ORDER BY created_at, id', [city])
-      : await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas ORDER BY created_at, id');
+      ? await this.readCatalog<CinemaDbRow>('SELECT * FROM cinemas WHERE LOWER(city) = LOWER($1) ORDER BY created_at, id', [city])
+      : await this.readCatalog<CinemaDbRow>('SELECT * FROM cinemas ORDER BY created_at, id');
     return res.rows.map((r) => this.mapCinema(r));
   }
 
   async getCinema(id: string): Promise<Cinema | null> {
-    const res = await this.pool.query<CinemaDbRow>('SELECT * FROM cinemas WHERE id = $1', [id]);
+    const res = await this.readCatalog<CinemaDbRow>('SELECT * FROM cinemas WHERE id = $1', [id]);
     return res.rows[0] ? this.mapCinema(res.rows[0]) : null;
   }
 
@@ -310,11 +329,12 @@ export class PgStore {
   }
 
   async listShowtimes(filter: { movieId?: string; cinemaId?: string; date?: string }): Promise<Showtime[]> {
-    const clauses: string[] = [];
+    const clauses: string[] = ['st.cancelled_at IS NULL', 'st.start_time > NOW()'];
     const params: any[] = [];
     if (filter.movieId) {
       params.push(filter.movieId);
-      clauses.push(`st.movie_id = $${params.length}`);
+      const index = params.length;
+      clauses.push(`(st.movie_id = $${index} OR 'tmdb-' || m.tmdb_id::text = $${index})`);
     }
     if (filter.cinemaId) {
       params.push(filter.cinemaId);
@@ -337,46 +357,41 @@ export class PgStore {
 
   async getSeatMap(showtimeId: string): Promise<SeatMapLayout | null> {
     const showtimeRes = await this.pool.query<ShowtimeDbRow>(
-      `${SHOWTIME_SELECT} WHERE st.id = $1`,
+      `${SHOWTIME_SELECT} WHERE st.id = $1 AND st.cancelled_at IS NULL`,
       [showtimeId]
     );
     if (!showtimeRes.rows[0]) return null;
     const st = showtimeRes.rows[0];
 
-    const seatsRes = await this.pool.query<SeatRow>(
-      `SELECT ss.seat_id, s.row_label, s.seat_number, s.seat_type,
-              ss.status, ss.hold_expires_at,
-              st.price_standard_kobo, st.price_vip_kobo
-         FROM showtime_seats ss
-         JOIN seats s      ON s.id = ss.seat_id
-         JOIN showtimes st ON st.id = ss.showtime_id
-        WHERE ss.showtime_id = $1
-        ORDER BY s.row_label, s.seat_number`,
-      [showtimeId]
+    const layoutKey = 'reelpass:layout:v1:' + st.auditorium_id;
+    type Geometry = { id: string; row_label: string; seat_number: number; seat_type: string };
+    const cached = await cache.get(layoutKey);
+    let geometry: Geometry[] | undefined;
+    if (cached) {
+      try { geometry = JSON.parse(cached) as Geometry[]; } catch { /* reload malformed cache */ }
+    }
+    if (!geometry) {
+      geometry = (await this.pool.query<Geometry>(
+        'SELECT id,row_label,seat_number,seat_type FROM seats WHERE auditorium_id=$1 ORDER BY row_label,seat_number',
+        [st.auditorium_id],
+      )).rows;
+      await cache.set(layoutKey, JSON.stringify(geometry), 1800);
+    }
+    const inventory = await this.pool.query<{ seat_id: string; status: string }>(
+      'SELECT seat_id,status FROM showtime_seats WHERE showtime_id=$1', [showtimeId],
     );
-
-    const now = Date.now();
-    const seats: Seat[] = seatsRes.rows.map((r) => {
-      const type = mapSeatType(r.seat_type);
-      let status: Seat['status'] = 'available';
-      if (r.status === 'SOLD') status = 'sold';
-      else if (r.status === 'HELD') {
-        const expired = r.hold_expires_at && new Date(r.hold_expires_at).getTime() < now;
-        status = expired ? 'available' : 'held';
-      }
-      const price = type === 'vip' ? Number(r.price_vip_kobo) : Number(r.price_standard_kobo);
-      return {
-        id: r.seat_id,
-        auditoriumId: st.auditorium_id,
-        row: r.row_label,
-        number: r.seat_number,
-        label: `${r.row_label}${r.seat_number}`,
-        type,
-        status,
-        price,
-      };
+    const availability = new Map(inventory.rows.map(row => [row.seat_id, row.status]));
+    const seats: Seat[] = geometry.flatMap(row => {
+      const state = availability.get(row.id);
+      if (!state) return [];
+      const type = mapSeatType(row.seat_type);
+      return [{
+        id: row.id, auditoriumId: st.auditorium_id, row: row.row_label, number: row.seat_number,
+        label: row.row_label + row.seat_number, type,
+        status: state === 'SOLD' ? 'sold' : state === 'HELD' ? 'held' : 'available',
+        price: Number(type === 'vip' ? st.price_vip_kobo : st.price_standard_kobo),
+      }];
     });
-
     const rows = Array.from(new Set(seats.map((s) => s.row)));
 
     return {
@@ -391,6 +406,25 @@ export class PgStore {
     };
   }
 
+  async findBookingReplay(userId: string, key: string, showtimeId: string, seats: string[]) {
+    const client = await this.pool.connect();
+    try { return await this.readBookingReplay(client, userId, key, showtimeId, seats); }
+    finally { client.release(); }
+  }
+
+  private async readBookingReplay(client: PoolClient, userId: string, key: string, showtimeId: string, seats: string[]) {
+    const { rows: [row] } = await client.query<Pick<BookingDbRow, 'id' | 'request_fingerprint'>>(
+      'SELECT id, request_fingerprint FROM bookings WHERE user_id = $1 AND idempotency_key = $2', [userId, key],
+    );
+    if (!row) return null;
+    const booking = await this.loadBooking(client, row.id);
+    const recorded = row.request_fingerprint ?? bookingFingerprint(booking.showtimeId, booking.seats.map(seat => seat.id));
+    if (recorded !== bookingFingerprint(showtimeId, seats)) {
+      throw new BookingConflictError('IDEMPOTENCY_KEY_REUSED', 'This booking key was used for a different seat selection.');
+    }
+    return booking;
+  }
+
   // -------------------------------------------------------------- bookings
   /** Reserve seats for a user as a temporary HELD booking (all-or-nothing). */
   async createBooking(input: {
@@ -399,34 +433,25 @@ export class PgStore {
     userId: string;
     idempotencyKey?: string;
     holdTtlSeconds: number;
+    holdToken?: string;
   }): Promise<CreateBookingResult> {
     const seatIds = Array.from(new Set(input.seatIds));
 
     return withTransaction(this.pool, async (client) => {
-      // Idempotent replay: return the previously created booking for this key.
       if (input.idempotencyKey) {
-        const existing = await client.query<{ id: string }>(
-          'SELECT id FROM bookings WHERE user_id = $1 AND idempotency_key = $2',
-          [input.userId, input.idempotencyKey]
-        );
-        if (existing.rows[0]) {
-          const booking = await this.loadBooking(client, existing.rows[0].id);
-          return { booking, replayed: true };
-        }
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended('booking:' || $1 || ':' || $2, 0))",
+          [input.userId, input.idempotencyKey]);
+        const booking = await this.readBookingReplay(client, input.userId, input.idempotencyKey, input.showtimeId, seatIds);
+        if (booking) return { booking, replayed: true };
       }
 
-      // Note: Stale holds for the requested seats are evaluated per-seat below,
-      // and the background sweeper runs every 15s. We avoid running global
-      // expireStaleBookings inside this transaction to prevent lock-order deadlocks.
-
-      const showtimeRes = await client.query<ShowtimeDbRow>(
-        'SELECT * FROM showtimes WHERE id = $1',
-        [input.showtimeId]
+      const { rows: [showtime] } = await client.query<ShowtimeDbRow & { cancelled_at: Date | null }>(
+        'SELECT * FROM showtimes WHERE id = $1 FOR SHARE', [input.showtimeId],
       );
-      if (!showtimeRes.rows[0]) {
-        throw new BookingConflictError('SHOWTIME_NOT_FOUND', 'Showtime does not exist');
+      if (!showtime) throw new BookingConflictError('SHOWTIME_NOT_FOUND', 'Showtime does not exist');
+      if (showtime.cancelled_at || new Date(showtime.start_time).getTime() <= Date.now()) {
+        throw new BookingConflictError('SHOWTIME_UNAVAILABLE', 'This screening is no longer bookable.');
       }
-      const showtime = showtimeRes.rows[0];
 
       // Lock the per-showtime seat rows in monotonic order. FOR UPDATE serialises competing claims.
       const locked = await client.query<LockedSeatRow>(
@@ -458,10 +483,7 @@ export class PgStore {
         if (seat.status === 'SOLD') {
           conflicts.push({ seatId, label, reason: 'sold' });
         } else if (seat.status === 'HELD') {
-          const expired = seat.hold_expires_at && new Date(seat.hold_expires_at).getTime() < now;
-          if (!expired && seat.held_by_user_id && seat.held_by_user_id !== input.userId) {
-            conflicts.push({ seatId, label, reason: 'held' });
-          }
+          conflicts.push({ seatId, label, reason: 'held' });
         }
       }
       if (conflicts.length > 0) {
@@ -477,42 +499,18 @@ export class PgStore {
         row.seat_type === 'vip'
           ? Number(showtime.price_vip_kobo)
           : Number(showtime.price_standard_kobo);
-      const totalAmount = seatIds.reduce((sum, id) => sum + priceFor(found.get(id)!), 0);
+      const totalAmount = seatIds.reduce((sum, id) => sum + priceFor(found.get(id)!), env.SERVICE_FEE_KOBO);
 
-      const bookingId = `bk-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
-      const reference = `RP-${Math.floor(100000 + Math.random() * 900000)}`;
+      const bookingId = 'bk-' + randomUUID();
+      const reference = 'RP-' + randomUUID().replace(/-/g, '').toUpperCase();
       const expiresAt = new Date(now + input.holdTtlSeconds * 1000);
 
       try {
-        // Clean up any expired pending holds for the requested seats so they can be re-held immediately
-        await client.query(
-          `DELETE FROM booking_seats
-            WHERE showtime_id = $1 AND seat_id = ANY($2::text[])
-              AND booking_id IN (
-                SELECT id FROM bookings WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
-              )`,
-          [input.showtimeId, seatIds]
-        );
-        await client.query(
-          `DELETE FROM tickets
-            WHERE showtime_id = $1 AND seat_id = ANY($2::text[])
-              AND booking_id IN (
-                SELECT id FROM bookings WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
-              )`,
-          [input.showtimeId, seatIds]
-        );
-        await client.query(
-          `UPDATE bookings
-              SET status = 'expired'
-            WHERE showtime_id = $1 AND status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()`,
-          [input.showtimeId]
-        );
-
         await client.query(
           `INSERT INTO bookings
              (id, booking_reference, user_id, showtime_id, total_amount_kobo, currency,
-              status, payment_status, idempotency_key, qr_code, expires_at)
-           VALUES ($1,$2,$3,$4,$5,'NGN','pending','pending',$6,$7,$8)`,
+              status, payment_status, idempotency_key, qr_code, expires_at, hold_token, service_fee_kobo, request_fingerprint)
+           VALUES ($1,$2,$3,$4,$5,'NGN','pending','pending',$6,$7,$8,$9,$10,$11)`,
           [
             bookingId,
             reference,
@@ -522,6 +520,9 @@ export class PgStore {
             input.idempotencyKey ?? null,
             `REELPASS-BOOKING-${reference}`,
             expiresAt.toISOString(),
+            input.holdToken ?? null,
+            env.SERVICE_FEE_KOBO,
+            bookingFingerprint(input.showtimeId, seatIds),
           ]
         );
 
@@ -534,11 +535,6 @@ export class PgStore {
             `INSERT INTO booking_seats (booking_id, showtime_id, seat_id, seat_label, seat_type, price_kobo)
              VALUES ($1,$2,$3,$4,$5,$6)`,
             [bookingId, input.showtimeId, seatId, label, seat.seat_type, price]
-          );
-          await client.query(
-            `INSERT INTO tickets (id, booking_id, showtime_id, seat_id, price_kobo, qr_code_data)
-             VALUES ($1,$2,$3,$4,$5,$6)`,
-            [`tkt-${bookingId}-${i + 1}`, bookingId, input.showtimeId, seatId, price, `REELPASS-TKT-${label}-${reference}`]
           );
         }
 
@@ -571,125 +567,24 @@ export class PgStore {
     });
   }
 
-  /** Confirm a pending booking (after verified payment). Idempotent. */
-  async confirmBooking(
-    bookingId: string,
-    userId: string,
-    payment?: { paymentId?: string }
-  ): Promise<Booking> {
-    return withTransaction(this.pool, async (client) => {
-      const res = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
-      const booking = res.rows[0];
-      if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
-      if (booking.user_id !== userId) {
-        throw new BookingConflictError('FORBIDDEN', 'Access to this booking is restricted');
-      }
-      // Idempotent: already confirmed returns as-is.
-      if (booking.status === 'confirmed') {
-        return this.loadBooking(client, bookingId);
-      }
-      if (booking.status !== 'pending') {
-        throw new BookingConflictError('BOOKING_NOT_PENDING', `Booking is ${booking.status}`);
-      }
-      if (booking.expires_at && new Date(booking.expires_at).getTime() < Date.now()) {
-        throw new BookingConflictError('BOOKING_EXPIRED', 'This reservation has expired');
-      }
-
-      await client.query(
-        `UPDATE showtime_seats
-            SET status = 'SOLD', held_by_user_id = NULL, hold_expires_at = NULL, updated_at = NOW()
-          WHERE showtime_id = $1 AND seat_id IN (
-            SELECT seat_id FROM booking_seats WHERE booking_id = $2
-          )`,
-        [booking.showtime_id, bookingId]
-      );
-
-      await client.query(
-        `UPDATE bookings
-            SET status = 'confirmed', payment_status = 'successful', payment_id = $2
-          WHERE id = $1`,
-        [bookingId, payment?.paymentId ?? null]
-      );
-
-      return this.loadBooking(client, bookingId);
-    });
-  }
-
-  /** Cancel a pending booking and release its seats. Idempotent. */
+  /** Cancel an unpaid reservation without touching settled tickets or payments. */
   async cancelBooking(bookingId: string, userId: string): Promise<Booking> {
-    return withTransaction(this.pool, async (client) => {
-      const res = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
-      const booking = res.rows[0];
+    const result = await withTransaction(this.pool, async client => {
+      const { rows: [booking] } = await client.query<BookingDbRow>('SELECT * FROM bookings WHERE id = $1 FOR UPDATE', [bookingId]);
       if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
-      if (booking.user_id !== userId) {
-        throw new BookingConflictError('FORBIDDEN', 'Access to this booking is restricted');
+      if (booking.user_id !== userId) throw new BookingConflictError('FORBIDDEN', 'Access to this booking is restricted');
+      if (booking.status === 'confirmed') throw new BookingConflictError('BOOKING_CONFIRMED', 'Confirmed bookings cannot be cancelled here');
+      const release = booking.status === 'pending' ? await releasePendingSeats(client, booking) : undefined;
+      if (release) {
+        await client.query("UPDATE bookings SET status = 'cancelled' WHERE id = $1", [bookingId]);
+        await client.query("UPDATE payments SET status = 'cancelled', failure_reason = 'CUSTOMER_CANCELLED' WHERE booking_id = $1 AND status = 'pending'", [bookingId]);
       }
-      if (booking.status === 'cancelled' || booking.status === 'expired') {
-        return this.loadBooking(client, bookingId);
-      }
-      if (booking.status === 'confirmed') {
-        throw new BookingConflictError('BOOKING_CONFIRMED', 'Confirmed bookings cannot be cancelled here');
-      }
-
-      const released = await client.query<{ seat_id: string }>(
-        'DELETE FROM booking_seats WHERE booking_id = $1 RETURNING seat_id',
-        [bookingId]
-      );
-      await client.query('DELETE FROM tickets WHERE booking_id = $1', [bookingId]);
-
-      const seatIds = released.rows.map((r) => r.seat_id);
-      if (seatIds.length > 0) {
-        await client.query(
-          `UPDATE showtime_seats
-              SET status = 'AVAILABLE', held_by_user_id = NULL, hold_expires_at = NULL, updated_at = NOW()
-            WHERE showtime_id = $1 AND seat_id = ANY($2::text[])`,
-          [booking.showtime_id, seatIds]
-        );
-      }
-
-      await client.query(`UPDATE bookings SET status = 'cancelled' WHERE id = $1`, [bookingId]);
-      return this.loadBooking(client, bookingId);
+      return { booking: await this.loadBooking(client, bookingId), release };
     });
-  }
-
-  /** Expire stale pending bookings and free their seats. Idempotent. */
-  async expireStaleBookings(client?: PoolClient): Promise<number> {
-    const run = async (c: PoolClient) => {
-      const stale = await c.query<{ id: string; showtime_id: string }>(
-        `SELECT id, showtime_id FROM bookings
-          WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()
-          FOR UPDATE`
-      );
-      if (stale.rowCount === 0) return 0;
-
-      const ids = stale.rows.map((r) => r.id);
-      const released = await c.query<{ showtime_id: string; seat_id: string }>(
-        'DELETE FROM booking_seats WHERE booking_id = ANY($1::text[]) RETURNING showtime_id, seat_id',
-        [ids]
-      );
-      await c.query('DELETE FROM tickets WHERE booking_id = ANY($1::text[])', [ids]);
-
-      // Group released seats by showtime and free them.
-      const byShowtime = new Map<string, string[]>();
-      for (const r of released.rows) {
-        const list = byShowtime.get(r.showtime_id) ?? [];
-        list.push(r.seat_id);
-        byShowtime.set(r.showtime_id, list);
-      }
-      for (const [showtimeId, seatIds] of byShowtime) {
-        await c.query(
-          `UPDATE showtime_seats
-              SET status = 'AVAILABLE', held_by_user_id = NULL, hold_expires_at = NULL, updated_at = NOW()
-            WHERE showtime_id = $1 AND seat_id = ANY($2::text[]) AND status <> 'SOLD'`,
-          [showtimeId, seatIds]
-        );
-      }
-      await c.query(`UPDATE bookings SET status = 'expired' WHERE id = ANY($1::text[])`, [ids]);
-      return ids.length;
-    };
-
-    if (client) return run(client);
-    return withTransaction(this.pool, run);
+    if (result.release?.seatIds.length) {
+      void seatHolds.release(result.release.showtimeId, result.release.seatIds, result.release.token).catch(() => undefined);
+    }
+    return result.booking;
   }
 
   async getBooking(id: string): Promise<Booking | null> {
@@ -702,15 +597,6 @@ export class PgStore {
   }
 
   async listBookingsForUser(userId: string): Promise<Booking[]> {
-    // Mark any stale pending holds for this user as expired in the database
-    await this.pool
-      .query(
-        `UPDATE bookings SET status = 'expired'
-          WHERE user_id = $1 AND status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()`,
-        [userId]
-      )
-      .catch(() => undefined);
-
     const res = await this.pool.query<{ id: string }>(
       `SELECT id FROM bookings WHERE user_id = $1 ORDER BY created_at DESC`,
       [userId]
@@ -763,7 +649,7 @@ export class PgStore {
       price: Number(r.price_kobo),
     }));
 
-    const tickets: Ticket[] = ticketsRes.rows.map((t) => ({
+    const tickets: Ticket[] = (effectiveStatus === 'confirmed' ? ticketsRes.rows : []).map((t) => ({
       id: t.id,
       bookingId: t.booking_id,
       showtimeId: t.showtime_id,
@@ -783,11 +669,12 @@ export class PgStore {
       seats,
       tickets,
       totalAmount: Number(row.total_amount_kobo),
+      serviceFee: Number(row.service_fee_kobo),
       currency: row.currency,
       status: effectiveStatus,
       paymentStatus: row.payment_status as 'pending' | 'successful' | 'failed',
       paymentId: row.payment_id ?? undefined,
-      qrCode: row.qr_code,
+      qrCode: effectiveStatus === 'confirmed' ? row.qr_code : '',
       createdAt: new Date(row.created_at).toISOString(),
       expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : undefined,
     };
@@ -804,42 +691,6 @@ export class PgStore {
   }
 
   // -------------------------------------------------------------- payments
-  async createPayment(input: {
-    id: string;
-    bookingId: string;
-    userId: string;
-    amountKobo: number;
-    currency?: string;
-    provider?: string;
-    reference: string;
-    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
-    transactionId?: string;
-    failureReason?: string;
-  }): Promise<PaymentRecord> {
-    const res = await this.pool.query<PaymentDbRow>(
-      `INSERT INTO payments (id, booking_id, user_id, amount_kobo, currency, provider, reference, transaction_id, status, failure_reason)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (reference) DO UPDATE 
-          SET booking_id = EXCLUDED.booking_id,
-              user_id = EXCLUDED.user_id,
-              status = EXCLUDED.status
-       RETURNING *`,
-      [
-        input.id,
-        input.bookingId,
-        input.userId,
-        input.amountKobo,
-        input.currency ?? 'NGN',
-        input.provider ?? 'flutterwave',
-        input.reference,
-        input.transactionId ?? null,
-        input.status ?? 'pending',
-        input.failureReason ?? null,
-      ]
-    );
-    return this.mapPayment(res.rows[0]);
-  }
-
   async getPaymentByReference(reference: string): Promise<PaymentRecord | null> {
     const res = await this.pool.query<PaymentDbRow>('SELECT * FROM payments WHERE reference = $1', [reference]);
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
@@ -847,7 +698,7 @@ export class PgStore {
 
   async getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null> {
     const res = await this.pool.query<PaymentDbRow>(
-      'SELECT * FROM payments WHERE booking_id = $1 ORDER BY created_at DESC LIMIT 1',
+      "SELECT * FROM payments WHERE booking_id = $1 ORDER BY (status = 'successful') DESC, created_at DESC LIMIT 1",
       [bookingId]
     );
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
@@ -855,43 +706,8 @@ export class PgStore {
 
   async getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null> {
     const res = await this.pool.query<PaymentDbRow>(
-      'SELECT * FROM payments WHERE transaction_id = $1 ORDER BY created_at DESC LIMIT 1',
+      "SELECT * FROM payments WHERE transaction_id = $1 ORDER BY (status = 'successful') DESC, created_at DESC LIMIT 1",
       [transactionId]
-    );
-    return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
-  }
-
-  async updatePaymentStatus(
-    reference: string,
-    status: 'pending' | 'successful' | 'failed' | 'cancelled',
-    transactionId?: string,
-    rawResponse?: unknown,
-    failureReason?: string,
-    verifiedAt?: Date
-  ): Promise<PaymentRecord | null> {
-    const res = await this.pool.query<PaymentDbRow>(
-      `UPDATE payments
-          SET status = $2::varchar,
-              transaction_id = COALESCE($3::varchar, transaction_id),
-              raw_response = COALESCE($4::jsonb, raw_response),
-              failure_reason = COALESCE($5::text, failure_reason),
-              verified_at = COALESCE(
-                $6::timestamptz,
-                CASE
-                  WHEN $2::varchar IN ('successful', 'failed', 'cancelled') THEN NOW()
-                  ELSE verified_at
-                END
-              )
-        WHERE reference = $1
-        RETURNING *`,
-      [
-        reference,
-        status,
-        transactionId ?? null,
-        rawResponse ? JSON.stringify(rawResponse) : null,
-        failureReason ?? null,
-        verifiedAt ?? null,
-      ]
     );
     return res.rows[0] ? this.mapPayment(res.rows[0]) : null;
   }

@@ -4,11 +4,12 @@ import {
   Seat,
   SeatMapLayout,
   Showtime,
-  Ticket,
 } from '@matinee/shared';
 import { memoryStore } from './memoryStore';
 import { PgStore, UserRecord, CreateBookingResult, BookingConflictError, PaymentRecord } from './pgStore';
 import { resolveDataMode, DataMode } from '../config/dataMode';
+import { env } from '../config/env';
+import { bookingFingerprint } from './bookingHolds';
 
 export { BookingConflictError };
 export type { UserRecord, CreateBookingResult, PaymentRecord };
@@ -28,6 +29,7 @@ export interface CreateBookingInput {
   userId: string;
   idempotencyKey?: string;
   holdTtlSeconds: number;
+  holdToken?: string;
 }
 
 export interface ReelStore {
@@ -46,32 +48,13 @@ export interface ReelStore {
   createBooking(input: CreateBookingInput): Promise<CreateBookingResult>;
   getBooking(id: string): Promise<Booking | null>;
   listBookingsForUser(userId: string): Promise<Booking[]>;
-  confirmBooking(id: string, userId: string, payment?: { paymentId?: string }): Promise<Booking>;
+  findBookingReplay(userId: string, key: string, showtimeId: string, seats: string[]): Promise<Booking | null>;
   cancelBooking(id: string, userId: string): Promise<Booking>;
   // payments
-  createPayment(input: {
-    id: string;
-    bookingId: string;
-    userId: string;
-    amountKobo: number;
-    currency?: string;
-    provider?: string;
-    reference: string;
-    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
-    transactionId?: string;
-    failureReason?: string;
-  }): Promise<PaymentRecord>;
   getPaymentByReference(reference: string): Promise<PaymentRecord | null>;
   getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null>;
   getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null>;
-  updatePaymentStatus(
-    reference: string,
-    status: 'pending' | 'successful' | 'failed' | 'cancelled',
-    transactionId?: string,
-    rawResponse?: unknown,
-    failureReason?: string,
-    verifiedAt?: Date
-  ): Promise<PaymentRecord | null>;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +64,6 @@ export interface ReelStore {
 class MemoryAdapter implements ReelStore {
   readonly mode = 'memory' as const;
   private idempotency = new Map<string, string>();
-  private payments = new Map<string, PaymentRecord>();
 
   async findUserByEmail(email: string): Promise<UserRecord | null> {
     return (
@@ -147,10 +129,20 @@ class MemoryAdapter implements ReelStore {
     };
   }
 
+  async findBookingReplay(userId: string, key: string, showtimeId: string, seats: string[]) {
+    const id = this.idempotency.get(userId + ':' + key);
+    const booking = id ? memoryStore.bookings.get(id) : undefined;
+    if (!booking) return null;
+    if (bookingFingerprint(booking.showtimeId, booking.seats.map(seat => seat.id)) !== bookingFingerprint(showtimeId, seats)) {
+      throw new BookingConflictError('IDEMPOTENCY_KEY_REUSED', 'This booking key was used for a different seat selection.');
+    }
+    return booking;
+  }
+
   async createBooking(input: CreateBookingInput): Promise<CreateBookingResult> {
-    const key = input.idempotencyKey ? `${input.userId}:${input.idempotencyKey}` : undefined;
-    if (key && this.idempotency.has(key)) {
-      const existing = memoryStore.bookings.get(this.idempotency.get(key)!);
+    const key = input.idempotencyKey ? input.userId + ':' + input.idempotencyKey : undefined;
+    if (input.idempotencyKey && key && this.idempotency.has(key)) {
+      const existing = await this.findBookingReplay(input.userId, input.idempotencyKey, input.showtimeId, input.seatIds);
       if (existing) return { booking: existing, replayed: true };
     }
 
@@ -197,20 +189,9 @@ class MemoryAdapter implements ReelStore {
     }
 
     const priceFor = (s: Seat) => (s.type === 'vip' ? showtime.priceVip : showtime.priceStandard);
-    const totalAmount = selected.reduce((sum, s) => sum + priceFor(s), 0);
+    const totalAmount = selected.reduce((sum, s) => sum + priceFor(s), env.SERVICE_FEE_KOBO);
     const bookingId = `bk-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
     const reference = `RP-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    const tickets: Ticket[] = selected.map((seat, idx) => ({
-      id: `tkt-${bookingId}-${idx + 1}`,
-      bookingId,
-      showtimeId: showtime.id,
-      seatId: seat.id,
-      seatLabel: seat.label,
-      seatType: seat.type,
-      price: priceFor(seat),
-      qrCodeData: `REELPASS-TKT-${seat.label}-${reference}`,
-    }));
 
     selected.forEach((s) => {
       s.status = 'sold';
@@ -225,12 +206,13 @@ class MemoryAdapter implements ReelStore {
       showtime,
       // Price every seat with the showtime-specific price (kobo, NGN).
       seats: selected.map((s) => ({ ...s, price: priceFor(s) })),
-      tickets,
+      tickets: [],
       totalAmount,
+      serviceFee: env.SERVICE_FEE_KOBO,
       currency: 'NGN',
       status: 'pending',
       paymentStatus: 'pending',
-      qrCode: `REELPASS-BOOKING-${reference}`,
+      qrCode: '',
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + input.holdTtlSeconds * 1000).toISOString(),
     };
@@ -270,16 +252,6 @@ class MemoryAdapter implements ReelStore {
       .filter((b) => b.userId === userId)
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
-  async confirmBooking(id: string, userId: string, payment?: { paymentId?: string }): Promise<Booking> {
-    const booking = memoryStore.bookings.get(id);
-    if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
-    if (booking.userId !== userId) throw new BookingConflictError('FORBIDDEN', 'Access to this booking is restricted');
-    booking.status = 'confirmed';
-    booking.paymentStatus = 'successful';
-    booking.paymentId = payment?.paymentId ?? booking.paymentId;
-    booking.seats = booking.seats.map((s) => ({ ...s, status: 'sold' }));
-    return booking;
-  }
   async cancelBooking(id: string, userId: string): Promise<Booking> {
     const booking = memoryStore.bookings.get(id);
     if (!booking) throw new BookingConflictError('BOOKING_NOT_FOUND', 'Booking not found');
@@ -297,65 +269,9 @@ class MemoryAdapter implements ReelStore {
     return booking;
   }
 
-  async createPayment(input: {
-    id: string;
-    bookingId: string;
-    userId: string;
-    amountKobo: number;
-    currency?: string;
-    provider?: string;
-    reference: string;
-    status?: 'pending' | 'successful' | 'failed' | 'cancelled';
-    transactionId?: string;
-    failureReason?: string;
-  }): Promise<PaymentRecord> {
-    const record: PaymentRecord = {
-      id: input.id,
-      bookingId: input.bookingId,
-      userId: input.userId,
-      amountKobo: input.amountKobo,
-      currency: input.currency ?? 'NGN',
-      provider: input.provider ?? 'flutterwave',
-      reference: input.reference,
-      transactionId: input.transactionId,
-      status: input.status ?? 'pending',
-      failureReason: input.failureReason,
-      createdAt: new Date().toISOString(),
-    };
-    this.payments.set(record.reference, record);
-    return record;
-  }
-  async getPaymentByReference(reference: string): Promise<PaymentRecord | null> {
-    return this.payments.get(reference) ?? null;
-  }
-  async getPaymentByBookingId(bookingId: string): Promise<PaymentRecord | null> {
-    const matches = Array.from(this.payments.values()).filter((p) => p.bookingId === bookingId);
-    if (matches.length === 0) return null;
-    return matches.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  }
-  async getPaymentByTransactionId(transactionId: string): Promise<PaymentRecord | null> {
-    return Array.from(this.payments.values()).find((p) => p.transactionId === transactionId) ?? null;
-  }
-  async updatePaymentStatus(
-    reference: string,
-    status: 'pending' | 'successful' | 'failed' | 'cancelled',
-    transactionId?: string,
-    rawResponse?: unknown,
-    failureReason?: string,
-    verifiedAt?: Date
-  ): Promise<PaymentRecord | null> {
-    const record = this.payments.get(reference);
-    if (!record) return null;
-    record.status = status;
-    if (transactionId) record.transactionId = transactionId;
-    if (rawResponse !== undefined) record.rawResponse = rawResponse;
-    if (failureReason !== undefined) record.failureReason = failureReason;
-    if (verifiedAt) record.verifiedAt = verifiedAt.toISOString();
-    else if (status === 'successful' || status === 'failed' || status === 'cancelled') {
-      record.verifiedAt = new Date().toISOString();
-    }
-    return record;
-  }
+  async getPaymentByReference(): Promise<null> { return null; }
+  async getPaymentByBookingId(): Promise<null> { return null; }
+  async getPaymentByTransactionId(): Promise<null> { return null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +291,7 @@ export function getStore(): ReelStore {
   const mode = getMode();
   if (mode === 'postgres') {
     if (!cachedPgStore) cachedPgStore = new PgStore();
-    return cachedPgStore as unknown as ReelStore;
+    return cachedPgStore;
   }
   // Singleton so idempotency keys and payments persist across requests.
   if (!cachedMemoryStore) cachedMemoryStore = new MemoryAdapter();

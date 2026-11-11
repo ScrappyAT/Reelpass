@@ -19,6 +19,13 @@
         "EXPO_PUBLIC_API_URL": "https://matineeapi-production.up.railway.app/api/v1"
       }
     },
+    "staging": {
+      "distribution": "internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "env": {

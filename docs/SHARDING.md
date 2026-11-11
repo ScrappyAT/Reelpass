@@ -25,7 +25,7 @@ Sharding distributes records across separate databases when a single database ca
 
 ## 4. Proposed shard key and routing
 
-**Candidate: `cinema_id` or a stable cinema group/region.** Most booking transactions involve one showtime in one cinema, making this a potential locality boundary. An alternative is `showtime_id` for a very large event-oriented workload. The choice requires production query statistics; it is not yet finalized.
+**Chosen initial shard key: `cinema_id`.** Booking transactions for a showtime stay with one cinema. A blockbuster can still overload that shard even if other cinemas are quiet. Admit clients at a bounded rate per showtime, cache static auditorium geometry, and monitor lock wait and pool saturation. If a sustained hot showtime needs a separate writer, move all of its inventory, bookings, tickets and financial records together and atomically update the routing directory after draining writes. Never allow two shards to accept bookings for that showtime.
 
 A future routing service would resolve a cinema/showtime to its owning shard, and all related `showtime_seats`, `bookings`, `booking_seats`, `tickets` and payment records would be co-located where feasible. A central directory would map cinema/showtime IDs to shards. Global user identities and movie metadata would require a separate ownership strategy or replicated read model.
 

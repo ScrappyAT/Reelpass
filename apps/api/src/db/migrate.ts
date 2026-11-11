@@ -10,8 +10,8 @@ import { getDbPool } from './pool';
  * - Tracks applied files in `schema_migrations`.
  * - Each migration runs inside a transaction; a failure rolls back and aborts.
  *
- * NOTE: never destructive. This runner only ever CREATEs. It never drops or
- * truncates, so it is safe to run repeatedly against a local database.
+ * Each SQL file defines the scope of the change. Review pending migrations
+ * before applying them to an existing environment.
  */
 export async function runMigrations(pool: Pool = getDbPool() as Pool): Promise<number> {
   if (!pool) {

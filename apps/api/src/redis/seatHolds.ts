@@ -39,7 +39,7 @@ for i = 1, #KEYS do
   end
 end
 for i = 1, #KEYS do
-  redis.call('SET', KEYS[i], userId, 'PX', ttl)
+  redis.call('SET', KEYS[i], userId, 'NX', 'PX', ttl)
 end
 return {1, '', ''}
 `;

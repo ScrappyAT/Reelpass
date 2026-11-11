@@ -1,70 +1,39 @@
-import { Queue, Worker, Job } from 'bullmq';
-import { cache } from '../redis/client';
+import { Queue, Worker } from 'bullmq';
+import type { Pool } from 'pg';
+import type Redis from 'ioredis';
+import { processNextPaymentEvent } from '../services/paymentWorkflow';
+import { expirePendingBookings, processNextRefund } from '../services/refundWorkflow';
 
-export interface BookingJobData {
-  bookingId: string;
-  showtimeId: string;
-  seatIds: string[];
-}
+export const PAYMENT_QUEUE = 'reelpass-payment-workflow';
 
-let bookingQueue: Queue | null = null;
-let worker: Worker | null = null;
-
-function getRedisConnection() {
-  const redis = cache.getRedisClient();
-  if (redis) {
-    // BullMQ requires maxRetriesPerRequest to be null and benefits from a duplicated connection
-    return redis.duplicate({ maxRetriesPerRequest: null });
-  }
-  return {
-    host: 'localhost',
-    port: 6385,
-    maxRetriesPerRequest: null,
-  };
-}
-
-export function getBookingQueue(): Queue | null {
-  if (bookingQueue) return bookingQueue;
-  if (!cache.isLive()) {
-    return null;
-  }
-
+export async function startPaymentWorker(pool: Pool, redis: Redis) {
+  // PostgreSQL is the durable inbox/outbox. The BullMQ schedule wakes the worker,
+  // including after Redis loss or a crash between webhook receipt and processing.
+  const queue = new Queue(PAYMENT_QUEUE, { connection: redis });
+  const worker = new Worker(PAYMENT_QUEUE, async job => {
+    console.log(JSON.stringify({ event: 'workflow_job_started', jobId: job.id, attempt: job.attemptsMade + 1 }));
+    for (let i = 0; i < 8 && await processNextPaymentEvent(pool); i++) { /* drain due events */ }
+    const expired = await expirePendingBookings(pool);
+    if (expired) console.log(JSON.stringify({ event: 'holds_expired', count: expired }));
+    for (let i = 0; i < 4 && await processNextRefund(pool); i++) { /* drain due refunds */ }
+  }, { connection: redis, concurrency: 2 });
+  worker.on('failed', (job, error) => console.error(JSON.stringify({
+    event: 'workflow_job_failed', jobId: job?.id, attempt: job?.attemptsMade, code: error.name,
+  })));
+  worker.on('error', error => console.error(JSON.stringify({ event: 'workflow_worker_error', code: error.name })));
+  queue.on('error', error => console.error(JSON.stringify({ event: 'workflow_queue_error', code: error.name })));
   try {
-    const connection = getRedisConnection();
-    bookingQueue = new Queue('ticket-processing', { connection });
-    return bookingQueue;
-  } catch (err) {
-    console.warn('⚠️ [BullMQ] Could not initialize ticket-processing queue:', err);
-    return null;
-  }
-}
-
-export function startWorker() {
-  if (worker) return;
-  if (!cache.isLive()) {
-    console.log('ℹ️ [BullMQ] Redis not active; running in direct in-process dispatch mode.');
-    return;
-  }
-
-  try {
-    const connection = getRedisConnection();
-    worker = new Worker(
-      'ticket-processing',
-      async (job: Job<BookingJobData>) => {
-        console.log(`[BullMQ] Processing job ${job.id} for booking: ${job.data.bookingId}`);
-        // Phase 2 will handle automatic ticket release after 10-minute hold expiry
+    await worker.waitUntilReady();
+    await queue.upsertJobScheduler('payment-workflow', { every: 2_000 }, {
+      name: 'drain', data: {}, opts: {
+        attempts: 3, backoff: { type: 'exponential', delay: 2_000 },
+        removeOnComplete: { count: 100 }, removeOnFail: { count: 100 },
       },
-      {
-        connection,
-      }
-    );
-
-    worker.on('completed', (job) => {
-      console.log(`[BullMQ] Job ${job.id} completed.`);
     });
-
-    console.log('✅ [BullMQ] Ticket processing worker started.');
-  } catch (err) {
-    console.warn('⚠️ [BullMQ] Worker could not be started:', err);
+  } catch (error) {
+    await worker.close(true);
+    await queue.close();
+    throw error;
   }
+  return { close: async () => { await worker.close(); await queue.close(); } };
 }

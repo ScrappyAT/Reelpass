@@ -12,18 +12,17 @@ import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import { Booking, formatNaira } from '@matinee/shared';
 import { colors, radii, shadows, spacing } from '../theme';
-import { Text, Card, Badge, Button, useToast } from '../components/ui';
+import { Text, Card, Badge, Button } from '../components/ui';
 import { api, isApiConnectionError } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { formatShowtimeDate, formatShowtimeTime } from '../utils/datetime';
 
-type CompleteState = 'verifying' | 'success' | 'cancelled' | 'failed';
+type CompleteState = 'verifying' | 'pending' | 'success' | 'cancelled' | 'failed';
 
 export default function PaymentCompleteScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { showToast } = useToast();
-  const { token, isLoading: authLoading } = useAuth();
+  const { isLoading: authLoading } = useAuth();
 
   const params = useLocalSearchParams<{
     status?: string;
@@ -36,16 +35,11 @@ export default function PaymentCompleteScreen() {
     booking_id?: string;
   }>();
 
-  const incomingStatus = (params.status || '').toLowerCase();
   const incomingRef = params.tx_ref || params.txRef || params.reference || '';
   const incomingTxId = params.transaction_id || params.transactionId || '';
   const incomingBookingId = params.bookingId || params.booking_id || '';
 
-  const [state, setState] = useState<CompleteState>(() => {
-    if (incomingStatus === 'cancelled') return 'cancelled';
-    if (incomingStatus === 'failed') return 'failed';
-    return 'verifying';
-  });
+  const [state, setState] = useState<CompleteState>('verifying');
 
   const [booking, setBooking] = useState<Booking | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -73,13 +67,12 @@ export default function PaymentCompleteScreen() {
         setBooking(res.data.booking);
         setState('success');
       } else if (res.success && !res.data?.isConfirmed) {
-        // Payment pending or held without confirmation
-        if (incomingStatus === 'cancelled') {
+        const current = res.data?.booking;
+        if (current?.status === 'cancelled' || current?.status === 'expired') {
           setState('cancelled');
-          setErrorMessage('Payment was cancelled before completion. Your seats remain held.');
+          setErrorMessage('This reservation has ended. Any late payment is reviewed for refund.');
         } else {
-          setState('failed');
-          setErrorMessage(res.error?.message || 'Payment has not been confirmed yet.');
+          setState('pending');
         }
       } else {
         setState('failed');
@@ -93,32 +86,16 @@ export default function PaymentCompleteScreen() {
           : err.message || 'Payment verification error occurred.'
       );
     }
-  }, [incomingBookingId, incomingRef, incomingTxId, incomingStatus]);
+  }, [incomingBookingId, incomingRef, incomingTxId]);
 
   // Trigger verification once auth session is initialized
   useEffect(() => {
     if (authLoading) return;
     if (hasAttemptedVerify) return;
 
-    // If gateway explicitly told us the user cancelled, honor that state
-    if (incomingStatus === 'cancelled') {
-      setState('cancelled');
-      setErrorMessage('Checkout was closed or cancelled. Your seats remain temporarily held.');
-      setHasAttemptedVerify(true);
-      return;
-    }
-
-    // If gateway explicitly marked failure
-    if (incomingStatus === 'failed') {
-      setState('failed');
-      setErrorMessage('The payment gateway reported a transaction failure. Please retry.');
-      setHasAttemptedVerify(true);
-      return;
-    }
-
     setHasAttemptedVerify(true);
     verifyPayment();
-  }, [authLoading, hasAttemptedVerify, incomingStatus, verifyPayment]);
+  }, [authLoading, hasAttemptedVerify, verifyPayment]);
 
   // Handle hardware back press on Android
   useEffect(() => {
@@ -182,6 +159,18 @@ export default function PaymentCompleteScreen() {
         )}
 
         {/* ================================================================= */}
+        {state === 'pending' && (
+          <View style={styles.stateWrapper}>
+            <Badge label="CONFIRMATION PENDING" variant="warning" />
+            <Text variant="h2" align="center" style={styles.title}>Waiting for Flutterwave</Text>
+            <Text variant="body" color="secondary" align="center" style={styles.description}>
+              Your ticket will appear once the payment notification is verified. You can check again or return to My Tickets.
+            </Text>
+            <Button title="Check payment status" onPress={verifyPayment} />
+            <Button title="My Tickets" onPress={handleGoToTickets} variant="outline" />
+          </View>
+        )}
+
         {/* STATE 2: SUCCESS / BOOKING CONFIRMED */}
         {/* ================================================================= */}
         {state === 'success' && booking && (

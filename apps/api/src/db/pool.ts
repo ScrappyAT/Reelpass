@@ -2,6 +2,7 @@ import { Pool, PoolConfig } from 'pg';
 import { env } from '../config/env';
 
 let pool: Pool | null = null;
+let catalogPool: Pool | null = null;
 let isPostgresConnected = false;
 
 export function getDbPool(): Pool | null {
@@ -80,9 +81,7 @@ export async function checkDatabaseConnection(required = false): Promise<boolean
   }
 
   try {
-    const client = await p.connect();
-    await client.query('SELECT 1');
-    client.release();
+    await p.query('SELECT 1');
     isPostgresConnected = true;
     console.log('✅ [Database] PostgreSQL connected successfully.');
     return true;
@@ -104,7 +103,26 @@ export function isDbLive(): boolean {
   return isPostgresConnected;
 }
 
+export function getCatalogReadPool() {
+  if (!env.DATABASE_READ_URL) return null;
+  if (!catalogPool) {
+    const url = new URL(env.DATABASE_READ_URL);
+    const local = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+    catalogPool = new Pool({
+      connectionString: env.DATABASE_READ_URL,
+      ...(local || url.searchParams.has('sslmode') ? {} : { ssl: { rejectUnauthorized: true } }),
+      max: 8, connectionTimeoutMillis: 2000, statement_timeout: 2000, query_timeout: 2500,
+    });
+    catalogPool.on('error', error => console.warn(JSON.stringify({ event: 'catalog_replica_error', code: error.name })));
+  }
+  return catalogPool;
+}
+
 export async function closeDbPool(): Promise<void> {
+  if (catalogPool) {
+    await catalogPool.end();
+    catalogPool = null;
+  }
   if (pool) {
     await pool.end();
     pool = null;

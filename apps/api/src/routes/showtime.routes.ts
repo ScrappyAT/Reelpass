@@ -2,8 +2,30 @@ import { Router } from 'express';
 import { ApiResponse, Showtime, SeatMapLayout } from '@matinee/shared';
 import { getStore } from '../db/store';
 import { AppError } from '../middleware/errorHandler';
+import { requireAuth } from '../middleware/auth';
+import { cancelShowtime } from '../services/refundWorkflow';
+import { identifier, paymentPool } from '../services/paymentWorkflow';
+
+import { getAdmission, rateLimit } from '../services/traffic';
 
 const router = Router();
+
+router.post('/:id/admission', requireAuth, rateLimit('admission', 70, 300), async (req, res, next) => {
+  try {
+    const data = await getAdmission(identifier.parse(req.params.id), req.user!.id);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ success: true, data });
+  } catch (error) { next(error); }
+});
+
+router.post('/:id/cancel', requireAuth, async (req, res, next) => {
+  try {
+    const user = await getStore().findUserById(req.user!.id);
+    if (user?.role !== 'admin') throw new AppError(403, 'FORBIDDEN', 'Administrator access is required.');
+    const data = await cancelShowtime(paymentPool(), identifier.parse(req.params.id));
+    return res.json({ success: true, data });
+  } catch (error) { next(error); }
+});
 
 // GET /api/v1/showtimes?movieId=...&cinemaId=...&date=...
 router.get('/', async (req, res, next) => {

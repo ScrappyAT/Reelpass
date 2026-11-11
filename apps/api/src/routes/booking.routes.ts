@@ -5,7 +5,13 @@ import { seatHolds } from '../redis/seatHolds';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 import { env } from '../config/env';
-import { isPaymentConfigured, verifyTransactionById, verifyTransactionByReference } from '../services/payment.service';
+import { isPaymentConfigured } from '../services/payment.service';
+import { readCheckoutStatus } from './payment.routes';
+import { createHash, randomUUID } from 'node:crypto';
+import { idempotencyKey as keySchema } from '../services/paymentWorkflow';
+import { bookingFingerprint } from '../db/bookingHolds';
+
+import { getAdmission, rateLimit } from '../services/traffic';
 
 const router = Router();
 
@@ -17,13 +23,11 @@ function conflictToAppError(err: BookingConflictError): AppError {
 }
 
 // POST /api/v1/bookings — hold seats and create a pending reservation.
-router.post('/', requireAuth, async (req, res, next) => {
+router.post('/', requireAuth, rateLimit('hold', 20, 120), async (req, res, next) => {
   const store = getStore();
   const userId = req.user!.id;
   const ttl = env.SEAT_HOLD_TTL_SECONDS;
-  const idempotencyKey =
-    (req.header('Idempotency-Key') as string | undefined) ||
-    (typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined);
+  let holdToken: string = randomUUID();
 
   let redisHeld = false;
   let showtimeId = '';
@@ -31,10 +35,22 @@ router.post('/', requireAuth, async (req, res, next) => {
 
   try {
     const input = createBookingSchema.parse(req.body);
+    const idempotencyKey = keySchema.optional().parse(req.get('Idempotency-Key') ?? req.body?.idempotencyKey);
+    if (idempotencyKey) {
+      holdToken = createHash('sha256').update(JSON.stringify([userId, idempotencyKey,
+        bookingFingerprint(input.showtimeId, input.seatIds)])).digest('hex');
+      const prior = await store.findBookingReplay(userId, idempotencyKey, input.showtimeId, input.seatIds);
+      if (prior) return res.status(201).json({ success: true, data: prior });
+    }
     showtimeId = input.showtimeId;
+    const admission = await getAdmission(showtimeId, userId);
+    if (!admission.admitted) {
+      res.setHeader('Retry-After', admission.retryAfter);
+      throw new AppError(429, 'WAITING_ROOM', 'This showtime is busy. Please wait for your turn.', admission);
+    }
     seatIds = Array.from(new Set(input.seatIds));
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (env.NODE_ENV === 'development') {
       console.log(
         `🧾 [Booking:dev] POST /bookings mode=${store.mode} body_keys=[${Object.keys(req.body || {})}] ` +
           `showtimeId=${showtimeId} seatIds_count=${seatIds.length} userId=${userId}`
@@ -43,7 +59,7 @@ router.post('/', requireAuth, async (req, res, next) => {
 
     // Fast-path atomic Redis hold (PostgreSQL mode only; DB remains the authority).
     if (isPostgresMode() && seatHolds.isLive()) {
-      const hold = await seatHolds.hold(showtimeId, seatIds, userId, ttl);
+      const hold = await seatHolds.hold(showtimeId, seatIds, holdToken, ttl);
       if (!hold.ok) {
         throw new AppError(409, 'SEAT_UNAVAILABLE', 'One or more selected seats are currently held by another user.', {
           conflicts: hold.conflicts,
@@ -58,6 +74,7 @@ router.post('/', requireAuth, async (req, res, next) => {
       userId,
       idempotencyKey,
       holdTtlSeconds: ttl,
+      holdToken,
     });
 
     const response: ApiResponse<Booking> = {
@@ -70,7 +87,7 @@ router.post('/', requireAuth, async (req, res, next) => {
       },
     };
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (env.NODE_ENV === 'development') {
       console.log(
         `✅ [Booking:dev] Created ${booking.id} (${booking.bookingReference}) seats=${booking.seats
           .map((s) => s.label)
@@ -82,10 +99,10 @@ router.post('/', requireAuth, async (req, res, next) => {
   } catch (error) {
     // Release the Redis hold if the DB write failed (all-or-nothing).
     if (redisHeld) {
-      await seatHolds.release(showtimeId, seatIds, userId).catch(() => undefined);
+      await seatHolds.release(showtimeId, seatIds, holdToken).catch(() => undefined);
     }
     if (error instanceof BookingConflictError) return next(conflictToAppError(error));
-    if (process.env.NODE_ENV !== 'production') {
+    if (env.NODE_ENV === 'development') {
       const err = error as any;
       console.warn(
         `⚠️ [Booking:dev] Rejected POST /bookings status=${err?.statusCode || 400} ` +
@@ -134,81 +151,15 @@ router.get('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/v1/bookings/:id/confirm — confirm after verified payment (idempotent).
+// Kept for old clients. It can report a verified booking, never confirm one.
 router.post('/:id/confirm', requireAuth, async (req, res, next) => {
   try {
-    const store = getStore();
-    const userId = req.user!.id;
-    const booking = await store.getBooking(req.params.id);
-    if (!booking) throw new AppError(404, 'BOOKING_NOT_FOUND', 'Booking not found');
-    if (booking.userId !== userId) throw new AppError(403, 'FORBIDDEN', 'Access to this booking is restricted');
-
-    // Idempotent: already confirmed returns the booking unchanged.
-    if (booking.status === 'confirmed') {
-      const response: ApiResponse<Booking> = {
-        success: true,
-        data: booking,
-        meta: { requestId: req.id, timestamp: new Date().toISOString(), message: 'Booking already confirmed.' },
-      };
-      return res.json(response);
-    }
-
-    if (!isPaymentConfigured()) {
-      throw new AppError(
-        503,
-        'PAYMENT_NOT_CONFIGURED',
-        'Payment provider is not configured, so this booking cannot be confirmed. No payment was processed and no success has been recorded.'
-      );
-    }
-
-    const transactionId = req.body?.transactionId;
-    const txRef = req.body?.txRef || `RP-PAY-${booking.bookingReference}`;
-    if (!transactionId && !txRef) {
-      throw new AppError(400, 'PAYMENT_REFERENCE_REQUIRED', 'A transactionId or txRef is required to verify payment.');
-    }
-
-    const verification = transactionId
-      ? await verifyTransactionById(transactionId)
-      : await verifyTransactionByReference(txRef);
-
-    if (!verification.ok) {
-      throw new AppError(402, 'PAYMENT_NOT_VERIFIED', `Payment could not be verified (${verification.reason || verification.status || 'unknown'}).`);
-    }
-    if (verification.currency !== 'NGN') {
-      throw new AppError(402, 'PAYMENT_CURRENCY_MISMATCH', `Expected NGN but gateway reported ${verification.currency}.`);
-    }
-    if (verification.amountKobo !== booking.totalAmount) {
-      throw new AppError(402, 'PAYMENT_AMOUNT_MISMATCH', `Paid amount does not match the booking total.`);
-    }
-
-    const reference = verification.txRef || `RP-PAY-${booking.bookingReference}`;
-    const existingPayment = await store.getPaymentByReference(reference);
-    if (!existingPayment) {
-      await store.createPayment({
-        id: `pay-${Date.now()}`,
-        bookingId: booking.id,
-        userId: booking.userId,
-        amountKobo: booking.totalAmount,
-        reference,
-        status: 'pending',
-      });
-    }
-    await store.updatePaymentStatus(reference, 'successful', verification.transactionId, verification.raw);
-    const confirmed = await store.confirmBooking(booking.id, userId, { paymentId: verification.transactionId });
-    if (isPostgresMode() && seatHolds.isLive()) {
-      await seatHolds.clear(booking.showtimeId, booking.seats.map((s) => s.id));
-    }
-
-    const response: ApiResponse<Booking> = {
-      success: true,
-      data: confirmed,
-      meta: { requestId: req.id, timestamp: new Date().toISOString(), message: 'Payment verified and booking confirmed.' },
-    };
-    return res.json(response);
-  } catch (error) {
-    if (error instanceof BookingConflictError) return next(conflictToAppError(error));
-    next(error);
-  }
+    const data = await readCheckoutStatus(req.user!.id, { bookingId: req.params.id,
+      reference: req.body?.txRef, transactionId: req.body?.transactionId });
+    if (data.isConfirmed) return res.json({ success: true, data: data.booking });
+    if (!isPaymentConfigured()) throw new AppError(503, 'PAYMENT_NOT_CONFIGURED', 'Sandbox checkout is unavailable.');
+    throw new AppError(202, 'PAYMENT_PENDING', 'Waiting for a verified payment notification.');
+  } catch (error) { next(error); }
 });
 
 // POST /api/v1/bookings/:id/cancel — release a pending reservation.
@@ -221,9 +172,7 @@ router.post('/:id/cancel', requireAuth, async (req, res, next) => {
     if (booking.userId !== userId) throw new AppError(403, 'FORBIDDEN', 'Access to this booking is restricted');
 
     const cancelled = await store.cancelBooking(booking.id, userId);
-    if (isPostgresMode() && seatHolds.isLive()) {
-      await seatHolds.release(booking.showtimeId, booking.seats.map((s) => s.id), userId);
-    }
+
 
     const response: ApiResponse<Booking> = {
       success: true,

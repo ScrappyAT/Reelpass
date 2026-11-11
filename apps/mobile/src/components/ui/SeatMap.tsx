@@ -8,6 +8,7 @@ import {
   StyleProp,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { Seat, formatNaira } from '@matinee/shared';
 import { colors, spacing } from '../../theme';
@@ -114,10 +115,11 @@ const SeatItem = memo<SeatItemProps>(
         accessibilityRole="checkbox"
         accessibilityLabel={getAccessibilityLabel()}
         accessibilityState={{
-          selected: isSelected,
+          checked: isSelected,
           disabled: !isAvailable,
         }}
       >
+        {isSelected && <Animated.View pointerEvents="none" entering={FadeIn.duration(160)} style={styles.selectionHighlight} />}
         {isWheelchair ? (
           <Ionicons
             name="body-outline"
@@ -141,7 +143,10 @@ const SeatItem = memo<SeatItemProps>(
   (prev, next) =>
     prev.isSelected === next.isSelected &&
     prev.seat.status === next.seat.status &&
-    prev.seat.id === next.seat.id
+    prev.seat.id === next.seat.id &&
+    prev.seat.price === next.seat.price &&
+    prev.seat.type === next.seat.type &&
+    prev.onPress === next.onPress
 );
 
 SeatItem.displayName = 'SeatItem';
@@ -210,7 +215,9 @@ export const SeatMap: React.FC<SeatMapProps> = ({
       </View>
 
       {/* 300+ Seats Scrollable Grid */}
+      <ScrollView nestedScrollEnabled style={styles.verticalScroll}>
       <ScrollView
+        nestedScrollEnabled
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.horizontalScrollContent}
@@ -256,6 +263,7 @@ export const SeatMap: React.FC<SeatMapProps> = ({
           })}
         </View>
       </ScrollView>
+      </ScrollView>
     </View>
   );
 };
@@ -263,6 +271,7 @@ export const SeatMap: React.FC<SeatMapProps> = ({
 const styles = StyleSheet.create({
   container: {
     width: '100%',
+    flexShrink: 1,
     paddingVertical: spacing.md,
   },
   screenWrapper: {
@@ -309,6 +318,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     borderWidth: 1,
   },
+  verticalScroll: { flexShrink: 1 },
   horizontalScrollContent: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.lg,
@@ -335,16 +345,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   seatBase: {
-    width: 20,
-    height: 20,
+    width: 44,
+    minHeight: 44,
     marginHorizontal: 2,
     borderRadius: 4,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  selectionHighlight: { ...StyleSheet.absoluteFill, backgroundColor: colors.glassLight },
   seatNumber: {
-    fontSize: 8,
+    fontSize: 12,
     fontWeight: '700',
   },
   aisleSpace: {

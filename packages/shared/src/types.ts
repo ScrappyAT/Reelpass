@@ -168,6 +168,7 @@ export interface Booking {
   tickets: Ticket[];
   /** Server-calculated total in integer kobo (NGN). Never trust a client-supplied total. */
   totalAmount: number;
+  serviceFee?: number;
   currency: string;
   status: BookingStatus;
   paymentStatus: 'pending' | 'successful' | 'failed';
@@ -204,7 +205,7 @@ export interface PaymentInitResult {
 
 export interface PaymentVerifyResult {
   booking: Booking;
-  payment: PaymentDetails;
+  payment: PaymentDetails | null;
   isConfirmed: boolean;
 }
 

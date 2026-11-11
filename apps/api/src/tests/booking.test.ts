@@ -101,7 +101,7 @@ test('creates a booking for an internal showtime id (regression: no UUID require
   assert.equal(json.data.seats.length, 1);
 
   // Total is computed server-side from the showtime record (integer kobo NGN).
-  assert.equal(json.data.totalAmount, showtime.priceStandard);
+  assert.equal(json.data.totalAmount, showtime.priceStandard + 15000);
 
   // The reserved seat is now marked sold in the live seat map.
   const seat = memoryStore.getSeats(showtime.auditoriumId).find((s) => s.id === standardSeatId)!;
@@ -157,7 +157,7 @@ test('retrieves the created booking via GET /bookings/my-tickets', async () => {
 
   const mine = json.data.find((b: any) => b.id === createdBookingId);
   assert.equal(mine.currency, 'NGN');
-  assert.equal(mine.totalAmount, mine.tickets.reduce((sum: number, t: any) => sum + t.price, 0));
+  assert.equal(mine.totalAmount, mine.seats.reduce((sum: number, t: any) => sum + t.price, mine.serviceFee));
 });
 
 test('every showtime maps to its own cinema in a supported Nigerian city', () => {
@@ -192,7 +192,7 @@ test('books a mixed standard + VIP selection with server-computed NGN prices', a
   });
 
   assert.equal(res.status, 201, `unexpected status: ${JSON.stringify(json)}`);
-  assert.equal(json.data.totalAmount, showtime.priceStandard + showtime.priceVip);
+  assert.equal(json.data.totalAmount, showtime.priceStandard + showtime.priceVip + 15000);
   assert.equal(json.data.currency, 'NGN');
 
   const standardSeat = json.data.seats.find((s: any) => s.id === standard.id);
@@ -201,7 +201,7 @@ test('books a mixed standard + VIP selection with server-computed NGN prices', a
   assert.equal(vipSeat.price, showtime.priceVip, 'VIP seat must use the showtime price');
   assert.equal(
     json.data.totalAmount,
-    json.data.seats.reduce((sum: number, s: any) => sum + s.price, 0)
+    json.data.seats.reduce((sum: number, s: any) => sum + s.price, json.data.serviceFee)
   );
 });
 

@@ -7,6 +7,8 @@ import { getStore } from '../db/store';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 
+import { rateLimit } from '../services/traffic';
+
 const router = Router();
 
 function generateToken(user: User): string {
@@ -23,7 +25,7 @@ function generateToken(user: User): string {
 }
 
 // POST /api/v1/auth/register
-router.post('/register', async (req, res, next) => {
+router.post('/register', rateLimit('register', 5, 15, true), async (req, res, next) => {
   try {
     const input = registerSchema.parse(req.body);
     const store = getStore();
@@ -61,7 +63,7 @@ router.post('/register', async (req, res, next) => {
 });
 
 // POST /api/v1/auth/login
-router.post('/login', async (req, res, next) => {
+router.post('/login', rateLimit('login', 6, 30, true), async (req, res, next) => {
   try {
     const input = loginSchema.parse(req.body);
     const store = getStore();
@@ -92,7 +94,7 @@ router.post('/login', async (req, res, next) => {
 });
 
 // POST /api/v1/auth/demo-login (instant demo user login)
-router.post('/demo-login', async (req, res, next) => {
+router.post('/demo-login', rateLimit('demo-login', 10, 30), async (req, res, next) => {
   try {
     const store = getStore();
     let demoUser = await store.findUserById('u-1001-demo-user-id');

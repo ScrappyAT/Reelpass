@@ -1,9 +1,9 @@
 # ReelPass (Matinee) — Project Submission Document
 
 **Graduation Project:** ReelPass (Matinee) — *Your seat. Your story.*  
-**Author / Developer:** ScrappyAT  
-**Submission Date:** 26 October 2026  
-**Status:** Complete & Verified on Physical Android Hardware  
+**Author / Developer:** ScrappyAT
+
+Original submission on 26 October 2026. Release candidate evidence updated on 11 November 2026. Local verification passed. Hosted staging, sandbox and replacement Android download are pending.
 
 ---
 
@@ -12,18 +12,21 @@
 | Item | Status | Link / Reference |
 |---|---|---|
 | **Project Name** | Completed | **ReelPass (Matinee)** |
-| **GitHub Repository** | Completed | [https://github.com/ScrappyAT/Reelpass](https://github.com/ScrappyAT/Reelpass) |
-| **Android Standalone APK** | Completed (Tested) | [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c) |
-| **Production Backend API** | Completed (Live) | [https://matineeapi-production.up.railway.app/api/v1](https://matineeapi-production.up.railway.app/api/v1) |
-| **Figma Design File** | Completed | [Figma Design Specification](https://www.figma.com/design/Gh0kzUtGs4547W19iH4WVa/Dev-and-Design-Bootcamp-Learning-Phase) |
+| **GitHub Repository** | Public repository. Candidate branch is local. | [ReelPass on GitHub](https://github.com/ScrappyAT/Reelpass) |
+| **Android Standalone APK** | Historical physical-device test; download expired | [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c) |
+| **Deployed Backend API** | Previous release responded. Candidate staging URL pending. | [Existing Railway API](https://matineeapi-production.up.railway.app/api/v1) |
+| **Figma Design File** | Existing design accessible. Full candidate screen coverage pending. | [Figma Design Specification](https://www.figma.com/design/Gh0kzUtGs4547W19iH4WVa/Dev-and-Design-Bootcamp-Learning-Phase) |
 | **System Architecture** | Completed | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| **500-VU Load Test Report** | Completed | [load-tests/REPORT.md](load-tests/REPORT.md) |
+| **500-user / 50-seat load test** | 50 holds, 450 expected conflicts, zero duplicate claims or unexpected errors, 1,453.8 ms p95 | [Script](load-tests/graduation-500x50.js) · [Report](load-tests/GRADUATION-500X50.md) · [Results](load-tests/graduation-500x50-result.json) |
+| **Graduation implementation** | Locally verified | [Implementation](docs/GRADUATION-IMPLEMENTATION.md) · [Release checks and pending evidence](docs/RELEASE-CHECKLIST.md) |
+| **Required engineering docs** | In repository | [README](README.md) · [Traffic](docs/TRAFFIC.md) · [Sharding](docs/SHARDING.md) · [Components](docs/COMPONENTS.md) · [Learning log](docs/LEARNING-LOG.md) |
 | **Security Architecture** | Completed | [docs/SECURITY.md](docs/SECURITY.md) |
 | **Security Audit Report** | Completed | [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) |
 | **Learning & Engineering Log** | Completed | [docs/LEARNING-LOG.md](docs/LEARNING-LOG.md) |
 | **Current Operational State** | Completed | [docs/STATE.md](docs/STATE.md) |
-| **Demonstration Video** | *Pending Recording* | *Pending (To be recorded on physical device; will be linked upon upload)* |
-| **LinkedIn Reflection Post** | Published | [LinkedIn Engineering Reflection](https://lnkd.in/p/euVj5q72) |
+| **Demonstration Video** | Existing Drive link. Playback, length and candidate coverage unverified. | [Demo Video](https://drive.google.com/file/d/1QA6IZhR8Ic2HOKR-vXoVW-sP6RIQ6ep1/view?usp=sharing) |
+| **LinkedIn Reflection Post** | Published. Detailed double-booking explanation still due for review. | [LinkedIn Engineering Reflection](https://lnkd.in/p/euVj5q72) |
+| **Portfolio case study** | Working link pending | [Remaining evidence](docs/RELEASE-CHECKLIST.md#android-and-submission-gates) |
 
 ---
 
@@ -69,7 +72,7 @@ My Tickets Retrieval:   Confirmed; displays pass in "Upcoming" tab with scannabl
 1. **Concurrency-Safe Seat Holds & Booking Engine**:
    - Redis Lua scripts guarantee atomic, all-or-nothing seat hold acquisition with 5-minute TTL.
    - PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) and database unique constraints (`showtime_id, seat_id`) on `booking_seats` and `tickets` mathematically prevent double-booking.
-   - Tested under 500 virtual users contending for 40 seats: 40 confirmed bookings, 9,155 expected HTTP 409 conflicts, 0 double-bookings, 0 server errors.
+   - The graduation test recorded 50 unique holds and 450 expected HTTP 409 conflicts when 500 virtual users contended for 50 seats. The database check found zero duplicate seat claims. [Graduation load report](load-tests/GRADUATION-500X50.md)
 
 2. **Android Standalone Deep-Link Redirection**:
    - Resolved an Expo Router `"Unmatched Route"` error when returning from Flutterwave checkout in the standalone APK.

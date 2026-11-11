@@ -3,12 +3,17 @@ import { ApiResponse, Movie } from '@matinee/shared';
 import { tmdbService, TMDB_ATTRIBUTION } from '../services/tmdb.service';
 import { AppError } from '../middleware/errorHandler';
 
+import { z } from 'zod';
+import { optionalAuth } from '../middleware/auth';
+import { rateLimit } from '../services/traffic';
+
 const router = Router();
+const pageParam = z.coerce.number().int().min(1).max(100).default(1);
 
 // GET /api/v1/movies/now-playing
 router.get('/now-playing', async (req, res, next) => {
   try {
-    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+    const page = pageParam.parse(req.query.page);
     const { movies, isDemo } = await tmdbService.getNowPlaying(page);
 
     const response: ApiResponse<Movie[]> = {
@@ -33,7 +38,7 @@ router.get('/now-playing', async (req, res, next) => {
 // GET /api/v1/movies/upcoming
 router.get('/upcoming', async (req, res, next) => {
   try {
-    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+    const page = pageParam.parse(req.query.page);
     const { movies, isDemo } = await tmdbService.getUpcoming(page);
 
     const response: ApiResponse<Movie[]> = {
@@ -58,7 +63,7 @@ router.get('/upcoming', async (req, res, next) => {
 // GET /api/v1/movies/popular
 router.get('/popular', async (req, res, next) => {
   try {
-    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+    const page = pageParam.parse(req.query.page);
     const { movies, isDemo } = await tmdbService.getPopular(page);
 
     const response: ApiResponse<Movie[]> = {
@@ -81,10 +86,10 @@ router.get('/popular', async (req, res, next) => {
 });
 
 // GET /api/v1/movies/search?q=...
-router.get('/search', async (req, res, next) => {
+router.get('/search', optionalAuth, rateLimit('search', 45, 100), async (req, res, next) => {
   try {
-    const query = (req.query.q as string) || '';
-    const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+    const query = z.string().trim().max(120).default('').parse(req.query.q);
+    const page = pageParam.parse(req.query.page);
     const { movies, isDemo } = await tmdbService.searchMovies(query, page);
 
     const response: ApiResponse<Movie[]> = {

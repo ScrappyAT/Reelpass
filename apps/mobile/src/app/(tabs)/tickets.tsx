@@ -38,6 +38,11 @@ export default function MyTicketsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, []);
   const [activeTab, setActiveTab] = useState<'upcoming' | 'past'>('upcoming');
   const [selectedTicketBooking, setSelectedTicketBooking] = useState<Booking | null>(null);
   const [payingBookingId, setPayingBookingId] = useState<string | null>(null);
@@ -179,9 +184,11 @@ export default function MyTicketsScreen() {
           });
         } else {
           showToast({
-            title: 'Verification Failed',
-            message: verifyRes.error?.message || 'Payment could not be verified.',
-            type: 'error',
+            title: verifyRes.data?.booking.status === 'pending' ? 'Confirmation Pending' : 'Payment Status',
+            message: verifyRes.error?.message || (verifyRes.data?.booking.status === 'pending'
+              ? 'Waiting for Flutterwave confirmation. Check this ticket again shortly.'
+              : 'This reservation has ended. Refresh My Tickets for the latest status.'),
+            type: 'gold',
           });
         }
       }
@@ -209,9 +216,12 @@ export default function MyTicketsScreen() {
         setSelectedTicketBooking(res.data.booking);
         await fetchTickets();
       } else {
+        if (res.data?.booking) setSelectedTicketBooking(res.data.booking);
         showToast({
-          title: 'Status Pending',
-          message: 'Payment has not been completed. You can tap Pay Now to proceed.',
+          title: 'Payment Status',
+          message: res.data?.booking.status === 'pending'
+            ? 'Waiting for Flutterwave confirmation. Check again shortly.'
+            : res.error?.message || 'This reservation has ended.',
           type: 'gold',
         });
       }
@@ -227,8 +237,8 @@ export default function MyTicketsScreen() {
   };
 
   // Determine whether a booking is an active upcoming reservation
-  const isUpcomingBooking = (b: Booking): boolean => {
-    const now = Date.now();
+  const isUpcomingBooking = useCallback((b: Booking): boolean => {
+    const now = clock;
     // Cancelled and explicit expired bookings belong to history
     if (b.status === 'cancelled' || b.status === 'expired') {
       return false;
@@ -242,14 +252,14 @@ export default function MyTicketsScreen() {
       ? new Date(b.showtime.endTime).getTime()
       : new Date(b.showtime?.startTime || 0).getTime();
     return screeningEndMs >= now;
-  };
+  }, [clock]);
 
-  const upcomingBookings = useMemo(() => bookings.filter(isUpcomingBooking), [bookings]);
-  const pastBookings = useMemo(() => bookings.filter((b) => !isUpcomingBooking(b)), [bookings]);
+  const upcomingBookings = useMemo(() => bookings.filter(isUpcomingBooking), [bookings, isUpcomingBooking]);
+  const pastBookings = useMemo(() => bookings.filter((b) => !isUpcomingBooking(b)), [bookings, isUpcomingBooking]);
   const displayedBookings = activeTab === 'upcoming' ? upcomingBookings : pastBookings;
 
   const getStatusPresentation = (b: Booking) => {
-    const now = Date.now();
+    const now = clock;
     const isExpiredHold =
       b.status === 'expired' ||
       (b.status === 'pending' && b.expiresAt && new Date(b.expiresAt).getTime() < now);
@@ -568,7 +578,7 @@ export default function MyTicketsScreen() {
               />
 
               <Text variant="h2" align="center" style={{ marginTop: spacing.xs }}>
-                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now())
+                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= clock)
                   ? 'Seats Reserved (Payment Pending)'
                   : selectedTicketBooking.status === 'cancelled'
                     ? 'Reservation Cancelled'
@@ -576,7 +586,7 @@ export default function MyTicketsScreen() {
               </Text>
 
               <Text variant="body" color="secondary" align="center" style={styles.pendingDescription}>
-                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now())
+                {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= clock)
                   ? 'Your seats are temporarily held. Complete payment via Flutterwave to instantly generate your contactless digital cinema pass.'
                   : 'This reservation is inactive. Contested seats have been returned to the auditorium seat map.'}
               </Text>
@@ -614,7 +624,7 @@ export default function MyTicketsScreen() {
                 </Text>
               </View>
 
-              {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= Date.now()) ? (
+              {selectedTicketBooking.status === 'pending' && (!selectedTicketBooking.expiresAt || new Date(selectedTicketBooking.expiresAt).getTime() >= clock) ? (
                 <View style={{ width: '100%', gap: spacing.sm, marginTop: spacing.md }}>
                   <Button
                     title={`Pay Now (${formatNaira(selectedTicketBooking.totalAmount)})`}

@@ -9,13 +9,19 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 \"src/tests/*.test.ts\"",
-    "test:pg": "node --import tsx --test \"src/tests/pg/*.test.ts\"",
+    "test:pg": "node --import tsx --test --test-concurrency=1 \"src/tests/pg/*.test.ts\"",
+    "test:load": "node --import tsx src/tests/pg/run-load.ts",
+    "test:upgrade": "node --import tsx --test src/tests/release/upgrade.ts",
     "db:setup": "node scripts/db-setup.js",
     "db:setup:prod": "node dist/db/setup.js",
     "db:migrate": "node scripts/db-migrate.js",
     "db:migrate:prod": "node dist/db/migrateCli.js",
     "redis:verify": "tsx scripts/verify-redis.ts",
-    "seed": "node scripts/db-setup.js"
+    "seed": "node scripts/db-setup.js",
+    "dev:worker": "tsx watch src/worker.ts",
+    "start:worker": "node dist/worker.js",
+    "showtimes:plan": "node dist/db/refreshDemoShowtimes.js",
+    "showtimes:apply": "node dist/db/refreshDemoShowtimes.js --apply"
   },
   "dependencies": {
     "@matinee/shared": "*",

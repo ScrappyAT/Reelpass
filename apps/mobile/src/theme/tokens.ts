@@ -22,7 +22,7 @@ export const colors = {
   // Warm ivory typography
   textPrimary: '#F7F4EB',
   textSecondary: '#B8B5AD',
-  textTertiary: '#7E7B74',
+  textTertiary: '#928E86',
   textGold: '#E5A93C',
   textInverse: '#0B0B0F',
 

@@ -1,5 +1,7 @@
 # ReelPass (Matinee) — System Architecture
 
+> This document includes October release evidence. For the current branch and verification, see [graduation implementation](GRADUATION-IMPLEMENTATION.md).
+
 ## 1. System Overview
 
 **ReelPass** is a cinema ticket reservation application developed as a TypeScript monorepo. It provides movie discovery, cinema and showtime selection, interactive seat reservations, Flutterwave payment integration, and digital cinema tickets.
@@ -29,19 +31,16 @@ The system is designed around the following principles:
 
 ```mermaid
 flowchart TD
-    A["ReelPass Android App<br/>Expo / React Native (EAS APK)"] --> B["REST API<br/>Node.js / Express (Railway)"]
-
-    B --> C["PostgreSQL<br/>Neon (Hosted Database)"]
-    B --> D["Redis<br/>Redis Cloud (Seat Holds & Cache)"]
-    B --> E["Flutterwave v3<br/>Payment Checkout & Verification"]
+    A["ReelPass Android App<br/>Expo / React Native"] --> B["Express API"]
+    B --> C["PostgreSQL primary<br/>Bookings, events, captures, refunds, tickets"]
+    B --> D["Redis<br/>Holds, waiting room, rate limits, cache, BullMQ"]
+    B --> E["Flutterwave v3 sandbox"]
+    E -->|Signed webhook| B
     B --> F["TMDB API<br/>Movie Information & Imagery"]
-
-    B --> G["Booking Expiry Sweeper<br/>15s Interval"]
-    G --> C
-    G --> D
-
-    B --> H["BullMQ Worker<br/>Redis Cloud"]
+    B -.-> R["Optional read replica<br/>Stable cinema metadata"]
+    H["Separate payment worker"] -->|Poll, lock and settle| C
     H --> D
+    H -->|Verify transaction and reconcile refunds| E
 ```
 
 ### Component Responsibilities
@@ -49,15 +48,15 @@ flowchart TD
 | Component | Technology | Responsibility |
 |---|---|---|
 | Mobile application | Expo, React Native, TypeScript | User interface, seat selection, browser checkout, and digital ticket QR passes |
-| API server | Node.js, Express, TypeScript (Railway) | Authentication, business rules, bookings, payment verification, and ticket issuance |
+| API server | Node.js, Express, TypeScript | Authentication, bookings, checkout initialization, webhook intake and status reads |
 | Shared package | TypeScript, Zod | Shared interfaces, domain models, and request validation schemas |
 | Persistent database | PostgreSQL / Neon | Users, movies, cinemas, showtimes, seats, bookings, payments, and tickets |
 | Cache and seat holds | Redis Cloud (Redis 7) | Atomic temporary seat holds (Lua script) with 5-minute TTL and caching |
 | Payment gateway | Flutterwave Standard v3 (Sandbox) | In-app browser checkout and server-side transaction verification |
 | Movie information | TMDB | Movie catalog information with offline high-fidelity demo fallback |
-| Background processing | Node.js interval, BullMQ | Automatic booking expiration and hold release |
+| Background processing | Separate Node.js process, BullMQ | Verified settlement, ticket issuance, hold expiry and refund processing |
 
-**Deployment note:** The API is deployed and active on **Railway** (`https://matineeapi-production.up.railway.app/api/v1`), backed by **Neon PostgreSQL** and **Redis Cloud**. Physical Android APK testing has verified the complete booking lifecycle.
+The diagram describes the graduation candidate. See the [release checklist](RELEASE-CHECKLIST.md) for the proposed staging topology and the state of hosted verification.
 
 ---
 
@@ -347,7 +346,7 @@ Cancellation also releases eligible seat holds.
 
 ### Booking Confirmation
 
-After payment verification:
+After the worker verifies a matching provider event:
 
 1. The backend validates the payment.
 2. The booking status changes to `confirmed`.
@@ -377,6 +376,7 @@ sequenceDiagram
     participant A as ReelPass API
     participant F as Flutterwave
     participant P as PostgreSQL
+    participant W as Payment worker
 
     U->>M: Select seats
     M->>A: Create booking
@@ -393,18 +393,23 @@ sequenceDiagram
     M->>F: Open browser checkout
     U->>F: Complete payment
 
-    M->>A: Request verification
-    A->>F: Verify transaction
-    F-->>A: Payment status
-
-    alt Verified successful payment
-        A->>P: Confirm booking and seats
-        A-->>M: Confirmed booking
-        M-->>U: Display QR ticket
-    else Failed or unverified payment
-        A-->>M: Payment not confirmed
-        M-->>U: Show failure or pending state
+    F->>A: Deliver webhook with v3 verif-hash
+    A->>P: Store deduplicated event
+    A-->>F: Acknowledge delivery
+    W->>P: Claim due event
+    W->>F: Verify transaction by ID
+    F-->>W: Transaction details
+    alt Matching capture and valid hold
+        W->>P: Record capture, confirm seats and create ticket in one transaction
+    else Late or extra verified capture
+        W->>P: Record capture and queue refund
+    else Failed or mismatched payment
+        W->>P: Record event outcome
     end
+    F-->>M: Return through API callback and mobile deep link
+    M->>A: Read booking payment status
+    A->>P: Read from primary
+    A-->>M: Pending, confirmed or failed state
 ```
 
 ### Payment Endpoints
@@ -413,16 +418,17 @@ sequenceDiagram
 |---|---|
 | `GET /api/v1/payments/status` | Payment configuration status |
 | `POST /api/v1/payments/initialize` | Initialize Flutterwave checkout |
-| `POST /api/v1/payments/verify` | Verify payment and confirm eligible booking |
-| `POST /api/v1/payments/webhook` | Receive provider payment notifications |
-| `POST /api/v1/bookings/:id/confirm` | Confirm booking after verified payment |
+| `POST /api/v1/payments/verify` | Read the caller's recorded payment state |
+| `GET /api/v1/payments/:bookingId/status` | Poll the caller's recorded payment state |
+| `POST /api/v1/payments/webhook` | Authenticate and persist provider notifications |
+| `POST /api/v1/bookings/:id/confirm` | Read the caller's recorded booking state through the legacy route |
 
 ### Payment Verification Rules
 
-The backend checks:
+The worker checks:
 
 - Transaction status
-- Transaction reference or identifier
+- Transaction identifier and reference
 - Payment amount
 - Currency (`NGN`)
 - Booking ownership
@@ -442,7 +448,7 @@ If payment credentials are missing or a transaction cannot be verified, the back
 
 Payment-related operations return an appropriate error instead of confirming the booking.
 
-**Verification status:** Flutterwave integration exists in the source code, but successful end-to-end sandbox checkout against the hosted backend has not yet been verified.
+The graduation candidate passed local tests with mocked provider responses. Its hosted sandbox run is pending.
 
 ---
 
@@ -489,23 +495,9 @@ Together, these mechanisms reduce race conditions, duplicate bookings, and incon
 
 ## 11. Background Processing
 
-### Booking Expiry Sweeper
+Run `npm run start:worker --workspace=@matinee/api` after building and applying the reviewed schema. A BullMQ scheduler checks for due work every two seconds. PostgreSQL stores webhook events, retry times, payment captures and refund ledger entries so a process restart can resume pending work.
 
-The backend runs an expiry sweep every 15 seconds in PostgreSQL mode.
-
-Its purpose is to identify expired pending bookings and release their seats.
-
-### BullMQ Infrastructure
-
-The project includes BullMQ queue and worker infrastructure under:
-
-`apps/api/src/queue/`
-
-The worker starts when Redis is available.
-
-The current worker contains basic job-processing scaffolding. It should not be described as a fully implemented distributed ticket-fulfilment pipeline.
-
-The PostgreSQL expiry sweeper is the implemented mechanism for cleaning up stale bookings.
+The worker expires pending bookings and releases their inventory. A cancelled screening or an extra verified capture can create one refund intent per provider transaction. A fenced, ambiguous refund submission goes through provider reconciliation and can require manual review.
 
 ---
 
@@ -579,44 +571,7 @@ A successful HTTP response alone should not be treated as proof that every depen
 
 ReelPass includes a k6 seat-contention load test.
 
-The test report is located at:
-
-`load-tests/REPORT.md`
-
-The recorded test ran against an isolated local environment using PostgreSQL and Redis.
-
-### Recorded Test Configuration
-
-| Parameter | Value |
-|---|---|
-| Virtual users | 500 |
-| Test duration | 20 seconds |
-| Contested seats | 40 |
-| Distinct user accounts | 50 |
-| Test environment | Local Docker PostgreSQL and Redis |
-
-### Recorded Results
-
-| Metric | Result |
-|---|---|
-| Successful bookings | 40 |
-| Expected seat conflicts | 9,155 |
-| Unexpected server errors | 0 |
-| Transport drops | 0 |
-| Average latency | 581.9 ms |
-| 95th-percentile latency | 2,109.9 ms |
-| Duplicate booked seats | 0 |
-| Duplicate tickets | 0 |
-
-The test demonstrated correct handling of 500 concurrent virtual users competing for a limited seat pool.
-
-**Important:** This is a concurrency-correctness test, not proof that the deployed application sustains 10,000 requests per second.
-
-Detailed load-testing evidence is available in:
-
-- `load-tests/REPORT.md`
-- `load-tests/summary.json`
-- `load-tests/sql-verification.json`
+The graduation test released 500 distinct virtual users against the same 50 seats in disposable PostgreSQL and Redis. It recorded 50 holds, 450 expected conflicts, zero duplicate seat claims, zero unexpected errors, 1,066.6 ms mean and 1,453.8 ms p95. It measures local seat-hold contention. See the [report](../load-tests/GRADUATION-500X50.md) and [raw result](../load-tests/graduation-500x50-result.json). The earlier 40-seat run remains in the [historical report](../load-tests/REPORT.md).
 
 ---
 
@@ -653,12 +608,14 @@ The API binds to `0.0.0.0` using the environment-provided `PORT` and connects to
 
 ### Deployment Status & Physical Verification
 
-The system is deployed and verified end-to-end:
+The October release has historical hosted and physical-device evidence:
 
 - **Live Infrastructure**: Railway (API), Neon (PostgreSQL), and Redis Cloud (Cache/Holds) are operational.
 - **Physical Device Validation**: Verified using Android Preview APK build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`.
 - **Audit Booking Record**: Verified reservation `RP-128807` (*Oppenheimer* at *ReelPass Cinemas Lekki*, seat A4, ₦4,500), including Flutterwave sandbox payment, deep-link redirect (`mobile://payment-complete`), server-side verification, ticket issuance, and QR pass rendering.
 - **Hardened Client Fixes**: Cold-boot authentication retry, self-healing demo token acquisition, 12-second database timeout, in-flight request locking, and actionable Retry buttons.
+
+The graduation candidate has a separate worker, a disposable migration rehearsal, and a staging APK profile. Its [release checklist](RELEASE-CHECKLIST.md) tracks the hosted and device checks still due.
 
 ---
 
@@ -721,9 +678,9 @@ ReelPass demonstrates a complete, production-style cinema reservation architectu
 
 Its central engineering objective—preventing double-booking while delivering a seamless mobile reservation and payment experience—has been achieved through atomic Redis holds, PostgreSQL row-level locks, strict database constraints, server-side payment verification, and hardened client-side self-healing.
 
-The platform is deployed across Railway, Neon, and Redis Cloud, with end-to-end functionality validated on a physical Android device.
+Local verification covers the graduation candidate's payment worker and seat contention. Hosted and physical-device results above belong to the October build.
 
 **Project:** ReelPass (Matinee)  
 **Repository:** https://github.com/ScrappyAT/Reelpass  
 **Document:** `docs/ARCHITECTURE.md`  
-**Last updated:** 26 October 2026
+**Last updated:** 11 November 2026

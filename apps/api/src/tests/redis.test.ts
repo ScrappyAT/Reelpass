@@ -120,11 +120,13 @@ test('getSanitizedRedisHost never leaks passwords or usernames', () => {
   assert.ok(!sanitized.includes('default'));
 });
 
-test('verifyRedisReadWrite verifies SET/GET/DEL on a live Redis instance', async () => {
+test('verifyRedisReadWrite verifies SET/GET/DEL on a live Redis instance', async t => {
   const client = cache.getRedisClient();
   if (client && cache.isLive()) {
     const verified = await verifyRedisReadWrite(client);
     assert.equal(verified, true, 'Temporary SET/GET/DEL test should succeed on live Redis');
+  } else {
+    t.skip('Redis is disabled in memory tests; the disposable suite exercises the real service.');
   }
 });
 

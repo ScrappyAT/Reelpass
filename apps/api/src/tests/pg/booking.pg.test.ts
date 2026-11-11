@@ -1,6 +1,8 @@
+import './isolatedEnv';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { getDbPool, closeDbPool, checkDatabaseConnection } from '../../db/pool';
+import { cache } from '../../redis/client';
 import { runMigrations } from '../../db/migrate';
 import { PgStore, BookingConflictError } from '../../db/pgStore';
 
@@ -15,7 +17,6 @@ import { PgStore, BookingConflictError } from '../../db/pgStore';
 // passes on a machine with no database. Run them with:
 //   npm run test:pg --workspace=@matinee/api
 
-let available = false;
 let store: PgStore;
 
 let runSeq = 0;
@@ -105,24 +106,16 @@ async function seatStatus(showtimeId: string, seatId: string): Promise<string> {
 }
 
 before(async () => {
-  try {
-    const ok = await checkDatabaseConnection(true);
-    if (!ok) return;
-    await runMigrations();
-    store = new PgStore();
-    available = true;
-  } catch (err: any) {
-    console.warn(`ℹ️ [pg-test] Skipping PostgreSQL tests: ${err.message}`);
-    available = false;
-  }
+  await checkDatabaseConnection(true);
+  await runMigrations();
+  store = new PgStore();
 });
 
 after(async () => {
-  await closeDbPool();
+  await Promise.all([closeDbPool(), cache.close()]);
 });
 
 test('a seat can be booked by only one user under concurrent load', async (t) => {
-  if (!available) return;
   const fx = await seedFixture(6);
   const [target] = fx.standardSeats;
 
@@ -156,7 +149,6 @@ test('a seat can be booked by only one user under concurrent load', async (t) =>
 });
 
 test('server computes the NGN total and per-seat prices (client price is ignored)', async () => {
-  if (!available) return;
   const fx = await seedFixture(1);
   const seatIds = [fx.standardSeats[0], fx.vipSeats[0]];
 
@@ -168,15 +160,14 @@ test('server computes the NGN total and per-seat prices (client price is ignored
   });
 
   assert.equal(booking.currency, 'NGN');
-  assert.equal(booking.totalAmount, fx.priceStandard + fx.priceVip);
+  assert.equal(booking.totalAmount, fx.priceStandard + fx.priceVip + 15000);
   for (const seat of booking.seats) {
     assert.equal(seat.price, seat.type === 'vip' ? fx.priceVip : fx.priceStandard);
   }
-  assert.equal(booking.totalAmount, booking.seats.reduce((sum, s) => sum + s.price, 0));
+  assert.equal(booking.totalAmount, booking.seats.reduce((sum, s) => sum + s.price, booking.serviceFee ?? 0));
 });
 
 test('an idempotency key replays the same booking and creates a single row', async () => {
-  if (!available) return;
   const fx = await seedFixture(1);
   const [seatId] = fx.standardSeats;
   const key = `pg-idem-${Date.now()}`;
@@ -195,7 +186,6 @@ test('an idempotency key replays the same booking and creates a single row', asy
 });
 
 test('cancelling a pending booking releases its seats for a later booking', async () => {
-  if (!available) return;
   const fx = await seedFixture(2);
   const [seatId] = fx.standardSeats;
 
@@ -216,23 +206,17 @@ test('cancelling a pending booking releases its seats for a later booking', asyn
   assert.equal(await seatStatus(fx.showtimeId, seatId), 'held');
 });
 
-test('confirming a booking marks seats sold and is idempotent', async () => {
-  if (!available) return;
+test('unpaid PostgreSQL reservations have no admission pass', async () => {
   const fx = await seedFixture(1);
-  const [seatId] = fx.standardSeats;
-  const userId = fx.userIds[0];
-
-  const { booking } = await store.createBooking({ showtimeId: fx.showtimeId, seatIds: [seatId], userId, holdTtlSeconds: 300 });
-  const confirmed = await store.confirmBooking(booking.id, userId);
-  assert.equal(confirmed.status, 'confirmed');
-  assert.equal(await seatStatus(fx.showtimeId, seatId), 'sold');
-
-  const again = await store.confirmBooking(booking.id, userId);
-  assert.equal(again.status, 'confirmed', 'confirming twice must not throw or change state');
+  const { booking } = await store.createBooking({
+    showtimeId: fx.showtimeId, seatIds: [fx.standardSeats[0]], userId: fx.userIds[0], holdTtlSeconds: 300,
+  });
+  assert.deepEqual(booking.tickets, []);
+  assert.equal(booking.qrCode, '');
+  assert.equal((await getDbPool()!.query('SELECT id FROM tickets WHERE booking_id = $1', [booking.id])).rowCount, 0);
 });
 
 test('a seat is HELD (not available) after a booking so it cannot be rebooked', async () => {
-  if (!available) return;
   const fx = await seedFixture(2);
   const [seatId] = fx.standardSeats;
 

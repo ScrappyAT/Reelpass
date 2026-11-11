@@ -1,199 +1,142 @@
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { env } from '../config/env';
 
-/**
- * Flutterwave payment integration for ReelPass.
- *
- * Configured via:
- * - FLW_SECRET_KEY or FLUTTERWAVE_SECRET_KEY
- * - FLW_SECRET_HASH or FLUTTERWAVE_WEBHOOK_SECRET_HASH
- * - FLW_CURRENCY (defaults to NGN)
- *
- * All verification is strictly server-side.
- * We verify: transaction status, reference, amount (in NGN kobo), currency, and uniqueness.
- * Secret keys are never logged or exposed to the client.
- */
-
-const FLUTTERWAVE_BASE = 'https://api.flutterwave.com/v3';
-
-type FetchMock = (url: string, init?: RequestInit) => Promise<{ ok: boolean; status: number; json: () => Promise<any> }>;
+const base = 'https://api.flutterwave.com/v3';
+type FetchMock = (url: string, init?: RequestInit) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 let mockFetch: FetchMock | null = null;
 
-/** Test hook: allow unit and integration tests to mock Flutterwave API responses safely. */
 export function setFlutterwaveMock(handler: FetchMock | null) {
+  if (env.NODE_ENV !== 'test') throw new Error('Gateway mocks are test-only');
   mockFetch = handler;
 }
 
-function secretKey(): string | null {
-  const key = env.FLW_SECRET_KEY || env.FLUTTERWAVE_SECRET_KEY;
-  if (!key) return null;
-  const trimmed = key.trim();
-  if (trimmed === '' || trimmed.includes('xxxx')) return null;
-  return trimmed;
+function sandboxKey() {
+  const key = (env.FLW_SECRET_KEY || env.FLUTTERWAVE_SECRET_KEY || '').trim();
+  return /^FLWSECK_TEST-[a-z0-9_-]+$/i.test(key) && !/xxxx|placeholder|^FLWSECK_TEST-your-/i.test(key) ? key : null;
 }
 
-export function isPaymentConfigured(): boolean {
-  return secretKey() !== null || mockFetch !== null;
-}
+export const isPaymentConfigured = () => Boolean(sandboxKey() || mockFetch);
+export const getPaymentCurrency = () => env.FLW_CURRENCY.toUpperCase();
 
-export function getPaymentCurrency(): string {
-  return env.FLW_CURRENCY || 'NGN';
+function webhookSecret() {
+  const hash = (env.FLW_SECRET_HASH || env.FLUTTERWAVE_WEBHOOK_SECRET_HASH || '').trim();
+  return hash && !/xxxx|placeholder|^your-/i.test(hash) ? hash : '';
 }
+export const isWebhookConfigured = () => Boolean(webhookSecret());
 
-export function isWebhookConfigured(): boolean {
-  const hash = env.FLW_SECRET_HASH || env.FLUTTERWAVE_WEBHOOK_SECRET_HASH;
-  return Boolean(hash && hash.trim() !== '' && !hash.includes('xxxx'));
-}
-
-/**
- * Verify a Flutterwave webhook `verif-hash` header in constant time.
- */
 export function verifyWebhookSignature(header: string | undefined): boolean {
-  if (!isWebhookConfigured()) return false;
-  if (!header) return false;
-  const expected = (env.FLW_SECRET_HASH || env.FLUTTERWAVE_WEBHOOK_SECRET_HASH)!;
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
+  const secret = webhookSecret();
+  if (!secret || !header) return false;
+  // Hashing both values gives equal-length buffers without exposing either value.
+  const digest = (value: string) => crypto.createHash('sha256').update(value).digest();
+  return crypto.timingSafeEqual(digest(header), digest(secret));
 }
 
-export interface VerificationResult {
-  ok: boolean;
-  status?: string;
-  /** Amount in minor units (kobo) as reported by the gateway. */
+export class GatewayError extends Error {
+  constructor(readonly code: string) { super(code); }
+}
+
+async function request(path: string, body?: object) {
+  const key = sandboxKey();
+  if (!key && !mockFetch) throw new GatewayError('SANDBOX_NOT_CONFIGURED');
+  let response;
+  try {
+    response = await (mockFetch || fetch)(base + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: 'Bearer ' + (key || 'test-mock'), 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8_000),
+      redirect: 'error',
+    });
+  } catch {
+    throw new GatewayError('GATEWAY_UNREACHABLE');
+  }
+  if (!response.ok) throw new GatewayError('GATEWAY_HTTP_' + response.status);
+  const json = await response.json().catch(() => null) as { status?: unknown; data?: unknown } | null;
+  if (json?.status !== 'success' || json.data == null) throw new GatewayError('GATEWAY_INVALID_RESPONSE');
+  return json.data;
+}
+
+export function minorUnits(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  const scaled = value * 100;
+  const rounded = Math.round(scaled);
+  return Number.isSafeInteger(rounded) && Math.abs(scaled - rounded) < 1e-6 ? rounded : undefined;
+}
+
+export function providerId(value: unknown): string | undefined {
+  if (typeof value === 'number' && (!Number.isSafeInteger(value) || value <= 0)) return undefined;
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const id = String(value);
+  return /^[1-9][0-9]{0,19}$/.test(id) ? id : undefined;
+}
+
+export async function initializePayment(input: {
+  reference: string; amountKobo: number; currency: string; email: string; name: string;
+}) {
+  const data = await request('/payments', {
+    tx_ref: input.reference,
+    amount: input.amountKobo / 100,
+    currency: input.currency,
+    redirect_url: env.FLW_CALLBACK_URL,
+    customer: { email: input.email, name: input.name },
+    customizations: { title: 'ReelPass Cinema Tickets' },
+  }) as { link?: unknown };
+  if (typeof data.link !== 'string') throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
+  let url: URL;
+  try { url = new URL(data.link); } catch { throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK'); }
+  if (url.origin !== 'https://checkout.flutterwave.com' || url.username || url.password) {
+    throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
+  }
+  return url.href;
+}
+
+export interface VerifiedTransaction {
+  transactionId?: string;
+  reference?: string;
   amountKobo?: number;
   currency?: string;
-  txRef?: string;
-  transactionId?: string;
-  raw?: unknown;
-  reason?: string;
+  status?: string;
 }
 
-export interface InitializeParams {
-  bookingReference: string;
-  amountKobo: number;
-  customerEmail: string;
-  customerName: string;
-  redirectUrl?: string;
-}
-
-export interface InitializeResult {
-  configured: boolean;
-  link?: string;
-  reference: string;
-  amountKobo: number;
-  currency: string;
-  message?: string;
-}
-
-/**
- * Create a Flutterwave Standard checkout session.
- * Generates a unique transaction reference per attempt to prevent reference collisions on retries.
- */
-export async function initializePayment(params: InitializeParams): Promise<InitializeResult> {
-  const key = secretKey();
-  const currency = getPaymentCurrency();
-  const reference = `RP-PAY-${params.bookingReference}-${Date.now()}`;
-
-  if (!key && !mockFetch) {
-    return {
-      configured: false,
-      reference,
-      amountKobo: params.amountKobo,
-      currency,
-      message:
-        'Payment provider is not configured. Set FLW_SECRET_KEY to enable checkout. No payment was attempted.',
-    };
-  }
-
-  const body = {
-    tx_ref: reference,
-    amount: params.amountKobo / 100, // Flutterwave expects major units (e.g. 7500 for ₦7,500)
-    currency,
-    redirect_url: params.redirectUrl || 'https://matineeapi-production.up.railway.app/api/v1/payments/callback',
-    customer: {
-      email: params.customerEmail,
-      name: params.customerName,
-    },
-    customizations: {
-      title: 'ReelPass Cinema Tickets',
-      description: `Payment for booking ${params.bookingReference}`,
-      logo: 'https://matineeapi-production.up.railway.app/favicon.ico',
-    },
-  };
-
-  const fetcher = mockFetch || fetch;
-  const res = await fetcher(`${FLUTTERWAVE_BASE}/payments`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key || 'mock_secret_key'}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-
-  const json: any = await res.json().catch(() => null);
-  if (!res.ok || json?.status !== 'success') {
-    throw new Error(`Flutterwave initialization failed: ${json?.message || res.status}`);
-  }
-
+export async function verifyTransactionById(id: string): Promise<VerifiedTransaction> {
+  const data = await request('/transactions/' + encodeURIComponent(id) + '/verify') as Record<string, unknown>;
   return {
-    configured: true,
-    link: json.data?.link,
-    reference,
-    amountKobo: params.amountKobo,
-    currency,
+    transactionId: providerId(data.id),
+    reference: typeof data.tx_ref === 'string' ? data.tx_ref : undefined,
+    amountKobo: minorUnits(data.amount),
+    currency: typeof data.currency === 'string' ? data.currency : undefined,
+    status: typeof data.status === 'string' ? data.status : undefined,
   };
 }
 
-function toResult(json: any): VerificationResult {
-  const data = json?.data;
-  if (!data) {
-    return { ok: false, reason: json?.message || 'No transaction data returned from gateway' };
-  }
-
-  const isSuccess = json.status === 'success' && data.status === 'successful';
-  return {
-    ok: isSuccess,
-    status: data.status,
-    amountKobo: typeof data.amount === 'number' ? Math.round(data.amount * 100) : undefined,
-    currency: data.currency,
-    txRef: data.tx_ref,
-    transactionId: data.id !== undefined ? String(data.id) : undefined,
-    raw: json,
-    reason: isSuccess ? undefined : data.processor_response || json.message || `Transaction status: ${data.status}`,
-  };
+function parseRefund(data: Record<string, unknown>) {
+  const id = providerId(data.id);
+  const transactionId = providerId(data.tx_id ?? data.transaction_id ?? data.TransactionId);
+  const amountKobo = minorUnits(data.amount_refunded ?? data.AmountRefunded);
+  const status = typeof data.status === 'string' ? data.status : '';
+  if (!id || !transactionId || !amountKobo || !status) throw new GatewayError('GATEWAY_INVALID_REFUND');
+  return { id, transactionId, amountKobo, status };
 }
 
-async function flwGet(path: string): Promise<any> {
-  const key = secretKey();
-  if (!key && !mockFetch) throw new Error('Payment provider is not configured');
+export async function requestRefund(transactionId: string, amountKobo: number, refundId: string) {
+  return parseRefund(await request('/transactions/' + encodeURIComponent(transactionId) + '/refund', {
+    amount: amountKobo / 100,
+    comments: 'ReelPass refund ' + refundId,
+  }) as Record<string, unknown>);
+}
 
-  const fetcher = mockFetch || fetch;
-  const res = await fetcher(`${FLUTTERWAVE_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${key || 'mock_secret_key'}` },
+export async function fetchRefund(refundId: string) {
+  const refund = parseRefund(await request('/refunds/' + encodeURIComponent(refundId)) as Record<string, unknown>);
+  if (refund.id !== refundId) throw new GatewayError('REFUND_PROVIDER_MISMATCH');
+  return refund;
+}
+
+export async function listRefunds(transactionId: string) {
+  const query = new URLSearchParams({
+    id: transactionId, from: '2020-01-01', to: new Date().toISOString().slice(0, 10),
   });
-
-  return res.json();
-}
-
-/** Verify a payment attempt by Flutterwave transaction ID */
-export async function verifyTransactionById(transactionId: string | number): Promise<VerificationResult> {
-  try {
-    const json = await flwGet(`/transactions/${encodeURIComponent(String(transactionId))}/verify`);
-    return toResult(json);
-  } catch (err: any) {
-    return { ok: false, reason: err.message || 'Failed to verify transaction by ID' };
-  }
-}
-
-/** Verify a payment attempt by merchant transaction reference (tx_ref) */
-export async function verifyTransactionByReference(txRef: string): Promise<VerificationResult> {
-  try {
-    const json = await flwGet(`/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`);
-    return toResult(json);
-  } catch (err: any) {
-    return { ok: false, reason: err.message || 'Failed to verify transaction by reference' };
-  }
+  const data = await request('/refunds?' + query);
+  if (!Array.isArray(data)) throw new GatewayError('GATEWAY_INVALID_REFUND_LIST');
+  return data.map(parseRefund).filter((refund) => refund.transactionId === transactionId);
 }

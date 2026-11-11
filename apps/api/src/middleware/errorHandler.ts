@@ -65,13 +65,15 @@ export function errorHandler(
   }
 
   // 3. Fallback Internal Server Error
-  console.error(`💥 [Error] Request ${requestId} [${req.method} ${req.originalUrl}] failed:`, err);
+  const production = process.env.NODE_ENV === 'production';
+  console.error(JSON.stringify({ event: 'http_error', requestId, userId: req.user?.id, method: req.method,
+    route: req.route?.path ?? req.path, code: err.code ?? err.name }));
   const response: ApiResponse = {
     success: false,
     error: {
       code: 'INTERNAL_SERVER_ERROR',
-      message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred' : err.message,
-      details: err?.message ? { error: err.message, code: err.code } : undefined,
+      message: production ? 'An unexpected error occurred' : err.message,
+      details: !production && err?.message ? { error: err.message, code: err.code } : undefined,
     },
     meta: {
       requestId,

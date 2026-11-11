@@ -16,7 +16,8 @@ declare global {
 }
 
 export function requestIdMiddleware(req: Request, res: Response, next: NextFunction) {
-  const reqId = (req.headers['x-request-id'] as string) || crypto.randomUUID();
+  const provided = req.get('x-request-id');
+  const reqId = provided && /^[A-Za-z0-9_-]{1,64}$/.test(provided) ? provided : crypto.randomUUID();
   req.id = reqId;
   res.setHeader('x-request-id', reqId);
   next();

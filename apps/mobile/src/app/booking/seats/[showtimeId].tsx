@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,6 +8,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
+import * as Haptics from 'expo-haptics';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import QRCode from 'react-native-qrcode-svg';
 import { Seat, Showtime, SeatMapLayout, Booking, formatNaira } from '@matinee/shared';
 import { colors, radii, shadows, spacing } from '../../../theme';
@@ -19,11 +21,12 @@ import {
   BottomSheet,
   useToast,
   EmptyState,
+  Skeleton,
 } from '../../../components/ui';
 import { api, isApiConnectionError } from '../../../services/api';
 import { formatShowtimeDate, formatShowtimeTime } from '../../../utils/datetime';
 
-type PaymentUiState = 'idle' | 'initializing' | 'checkout_open' | 'verifying' | 'success' | 'failed' | 'cancelled';
+type PaymentUiState = 'idle' | 'initializing' | 'checkout_open' | 'verifying' | 'pending' | 'success' | 'failed' | 'cancelled';
 
 /** Turn an API error envelope or thrown error into an actionable user message. */
 function describeBookingError(res: {
@@ -55,6 +58,11 @@ export default function SeatSelectionScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reserving, setReserving] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const requestKey = useRef<{ selection: string; key: string } | null>(null);
+  const reservingRef = useRef(false);
+  const payingRef = useRef(false);
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
   const [showSuccessSheet, setShowSuccessSheet] = useState(false);
 
@@ -63,54 +71,67 @@ export default function SeatSelectionScreen() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchSeatLayout = async () => {
-      if (!showtimeId) return;
+    if (!showtimeId) return;
+    let active = true;
+    let detailsLoaded = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      let nextMs = 5000;
       try {
-        const [seatsRes, stRes] = await Promise.all([
+        const admission = await api.getShowtimeAdmission(showtimeId);
+        if (!active) return;
+        if (!admission.success || !admission.data) {
+          const retry = (admission.error?.details as { retryAfter?: number } | undefined)?.retryAfter;
+          if (retry) nextMs = Math.max(nextMs, retry * 1000);
+          throw new Error(admission.error?.message || 'The waiting room is unavailable.');
+        }
+        setPosition(admission.data.position);
+        if (!admission.data.admitted) {
+          nextMs = admission.data.retryAfter * 1000;
+          setLoadError(null);
+          return;
+        }
+        const [seats, details] = await Promise.all([
           api.getShowtimeSeats(showtimeId),
-          api.getShowtimeById(showtimeId),
+          detailsLoaded ? undefined : api.getShowtimeById(showtimeId),
         ]);
-
-        if (seatsRes.success && seatsRes.data) {
-          setLayout(seatsRes.data);
-        } else if (!seatsRes.success) {
-          setLoadError(seatsRes.error?.message || 'Could not load this seat map.');
+        if (!active) return;
+        if (!seats.success || !seats.data) throw new Error(seats.error?.message || 'Could not load the seat map.');
+        const updated = seats.data;
+        setLoadError(null);
+        setLayout(updated);
+        const available = new Map(updated.seats.filter(seat => seat.status === 'available').map(seat => [seat.id, seat]));
+        setSelectedSeats(previous => {
+          const current = previous.flatMap(seat => available.get(seat.id) ?? []);
+          return current.length === previous.length && current.every((seat, i) => seat.price === previous[i].price)
+            ? previous : current;
+        });
+        if (details?.data) {
+          setShowtime(details.data);
+          detailsLoaded = true;
         }
-        if (stRes.success && stRes.data) {
-          setShowtime(stRes.data);
-        }
-      } catch (e: any) {
-        console.warn('Failed to load seats:', e);
-        setLoadError(
-          isApiConnectionError(e)
-            ? e.message
-            : 'Could not load the seating configuration for this auditorium.'
-        );
+      } catch (error) {
+        if (active) setLoadError(error instanceof Error ? error.message : 'Could not update seats.');
       } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+          timer = setTimeout(() => void refresh(), nextMs);
+        }
       }
     };
+    void refresh();
+    return () => { active = false; clearTimeout(timer); };
+  }, [showtimeId, refreshKey]);
 
-    fetchSeatLayout();
-  }, [showtimeId]);
+  const handleToggleSeat = useCallback((seat: Seat) => {
+    setSelectedSeats(previous => previous.some(item => item.id === seat.id)
+      ? previous.filter(item => item.id !== seat.id)
+      : previous.length < 8 ? [...previous, seat] : previous);
+  }, []);
 
-  const handleToggleSeat = (seat: Seat) => {
-    const isAlreadySelected = selectedSeats.some((s) => s.id === seat.id);
-
-    if (isAlreadySelected) {
-      setSelectedSeats(selectedSeats.filter((s) => s.id !== seat.id));
-    } else {
-      if (selectedSeats.length >= 8) {
-        showToast({
-          title: 'Seat Limit',
-          message: 'You can reserve a maximum of 8 seats per booking.',
-          type: 'gold',
-        });
-        return;
-      }
-      setSelectedSeats([...selectedSeats, seat]);
-    }
-  };
+  useEffect(() => {
+    if (paymentState === 'success') void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }, [paymentState]);
 
   const totalPrice = selectedSeats.reduce((sum, s) => sum + s.price, 0);
 
@@ -124,17 +145,19 @@ export default function SeatSelectionScreen() {
       return;
     }
 
-    if (reserving) return; // Guard against double-tap duplicate submissions
-
+    if (reservingRef.current) return;
+    reservingRef.current = true;
     setReserving(true);
     try {
-      const res = await api.createBooking(
-        showtimeId,
-        selectedSeats.map((s) => s.id)
-      );
-
+      const ids = selectedSeats.map(seat => seat.id);
+      const selection = JSON.stringify([showtimeId, [...ids].sort()]);
+      if (requestKey.current?.selection !== selection) {
+        requestKey.current = { selection, key: 'hold-' + Date.now() + '-' + Math.random().toString(36).slice(2) };
+      }
+      const res = await api.createBooking(showtimeId, ids, requestKey.current.key);
       if (res.success && res.data) {
         setCreatedBooking(res.data);
+        requestKey.current = null;
         setPaymentState('idle');
         setPaymentError(null);
         setShowSuccessSheet(true);
@@ -161,109 +184,94 @@ export default function SeatSelectionScreen() {
         type: 'error',
       });
     } finally {
+      reservingRef.current = false;
       setReserving(false);
     }
   };
 
-  const handlePayNow = async (bookingOverride?: Booking) => {
-    const targetBooking = bookingOverride || createdBooking;
-    if (!targetBooking) return;
-
-    setPaymentState('initializing');
-    setPaymentError(null);
-
-    try {
-      const initRes = await api.initializePayment(targetBooking.id);
-      if (!initRes.success || !initRes.data?.link) {
-        setPaymentState('failed');
-        setPaymentError(initRes.error?.message || 'Could not initialize payment session.');
-        return;
-      }
-
-      setPaymentState('checkout_open');
-      const checkoutUrl = initRes.data.link;
-      const ref = initRes.data.reference;
-
-      // Open in-app browser with redirect intercept for mobile scheme
-      const result = await WebBrowser.openAuthSessionAsync(
-        checkoutUrl,
-        'mobile://payment-complete'
-      );
-
-      setPaymentState('verifying');
-
-      let returnedStatus: string | null = null;
-      let transactionId: string | undefined;
-      let returnedRef = ref;
-
-      if (result.type === 'success' && result.url) {
-        try {
-          const parsed = new URL(result.url);
-          returnedStatus = parsed.searchParams.get('status');
-          const txId = parsed.searchParams.get('transaction_id');
-          if (txId) transactionId = txId;
-          const rRef = parsed.searchParams.get('tx_ref');
-          if (rRef) returnedRef = rRef;
-        } catch {
-          // If URL parsing fails, proceed with stored reference
-        }
-      }
-
-      // Always perform server-side verification with Flutterwave API
-      const verifyRes = await api.verifyPayment({
-        bookingId: targetBooking.id,
-        reference: returnedRef,
-        transactionId,
-      });
-
-      if (verifyRes.success && verifyRes.data?.isConfirmed && verifyRes.data.booking) {
-        setCreatedBooking(verifyRes.data.booking);
-        setPaymentState('success');
-      } else {
-        if (returnedStatus === 'cancelled' || result.type === 'cancel' || result.type === 'dismiss') {
-          setPaymentState('cancelled');
-          setPaymentError('Checkout window closed. Your seats are still held. Tap Pay Now to try again.');
-        } else {
-          setPaymentState('failed');
-          setPaymentError(verifyRes.error?.message || 'Payment could not be confirmed. Please check your transaction.');
-        }
-      }
-    } catch (err: any) {
-      setPaymentState('failed');
-      setPaymentError(err.message || 'Payment processing error occurred.');
+  const applyPaymentStatus = (booking: Booking) => {
+    setCreatedBooking(booking);
+    if (booking.status === 'confirmed' && booking.paymentStatus === 'successful') {
+      setPaymentState('success');
+    } else if (booking.status === 'cancelled' || booking.status === 'expired') {
+      setPaymentState('cancelled');
+      setPaymentError('This reservation has ended. Any late payment is reviewed for refund.');
+    } else {
+      setPaymentState('pending');
     }
   };
 
+  const handlePayNow = async () => {
+    if (createdBooking?.status !== 'pending' || payingRef.current) return;
+    payingRef.current = true;
+    setPaymentState('initializing');
+    setPaymentError(null);
+    try {
+      const checkout = await api.initializePayment(createdBooking.id);
+      if (!checkout.success || !checkout.data?.link) {
+        setPaymentState(checkout.success ? 'pending' : 'failed');
+        setPaymentError(checkout.error?.message || 'Checkout is being prepared. Check the status before trying again.');
+        return;
+      }
+      setPaymentState('checkout_open');
+      const result = await WebBrowser.openAuthSessionAsync(checkout.data.link, 'mobile://payment-complete');
+      setPaymentState('verifying');
+      const status = result.type === 'success'
+        ? await api.verifyPayment({ bookingId: createdBooking.id, reference: checkout.data.reference })
+        : await api.getPaymentStatus(createdBooking.id);
+      if (!status.success || !status.data) throw new Error(status.error?.message || 'Payment status is unavailable.');
+      applyPaymentStatus(status.data.booking);
+    } catch (error) {
+      setPaymentState('failed');
+      setPaymentError(error instanceof Error ? error.message : 'Payment status is unavailable.');
+    } finally { payingRef.current = false; }
+  };
+
   const handleCheckStatus = async () => {
-    if (!createdBooking) return;
+    if (!createdBooking || payingRef.current) return;
+    payingRef.current = true;
     setPaymentState('verifying');
     setPaymentError(null);
     try {
-      const statusRes = await api.getPaymentStatus(createdBooking.id);
-      if (statusRes.success && statusRes.data?.isConfirmed && statusRes.data.booking) {
-        setCreatedBooking(statusRes.data.booking);
-        setPaymentState('success');
-      } else {
-        setPaymentState('idle');
-        showToast({
-          title: 'Payment Pending',
-          message: 'Payment has not been completed yet. You can tap Pay Now to proceed.',
-          type: 'gold',
-        });
-      }
-    } catch (err: any) {
+      const status = await api.getPaymentStatus(createdBooking.id);
+      if (!status.success || !status.data) throw new Error(status.error?.message || 'Payment status is unavailable.');
+      applyPaymentStatus(status.data.booking);
+    } catch (error) {
       setPaymentState('failed');
-      setPaymentError(err.message || 'Could not verify payment status.');
-    }
+      setPaymentError(error instanceof Error ? error.message : 'Could not check payment status.');
+    } finally { payingRef.current = false; }
+  };
+
+  const handleRelease = async () => {
+    if (createdBooking?.status !== 'pending' || payingRef.current) return;
+    payingRef.current = true;
+    try {
+      const result = await api.cancelBooking(createdBooking.id);
+      if (!result.success) throw new Error(result.error?.message || 'Could not release this reservation.');
+      setCreatedBooking(null);
+      setSelectedSeats([]);
+      setShowSuccessSheet(false);
+      setRefreshKey(key => key + 1);
+    } catch (error) {
+      showToast({ title: 'Reservation status', message: error instanceof Error ? error.message : 'Please try again.', type: 'error' });
+    } finally { payingRef.current = false; }
   };
 
   if (loading) {
     return (
       <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color={colors.gold} />
-        <Text variant="body" color="secondary" style={{ marginTop: 12 }}>
-          Rendering 300+ seat layout...
-        </Text>
+        <Skeleton width="80%" height={200} />
+        <Text variant="body" style={{ marginTop: spacing.md }}>Loading seats…</Text>
+      </View>
+    );
+  }
+
+  if (position > 0 && !showSuccessSheet) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <EmptyState title="Waiting room" description={'You are number ' + position + ' in line. Your position updates automatically.'}
+          actionTitle="Back to showtimes" onAction={() => router.back()} />
+        {loadError && <Text variant="caption" color="warning">{loadError}</Text>}
       </View>
     );
   }
@@ -277,15 +285,14 @@ export default function SeatSelectionScreen() {
             loadError ||
             'Could not load the seating configuration for this auditorium.'
           }
-          actionTitle="Back"
-          onAction={() => router.back()}
+          actionTitle="Try again"
+          onAction={() => { setLoading(true); setRefreshKey(key => key + 1); }}
         />
       </View>
     );
   }
 
   const activeBooking = createdBooking;
-  const isConfirmed = activeBooking?.status === 'confirmed';
 
   return (
     <View style={styles.container}>
@@ -300,6 +307,8 @@ export default function SeatSelectionScreen() {
           </Text>
         </View>
       </View>
+
+      {loadError && <Text variant="caption" color="warning" style={{ padding: spacing.md }}>{loadError}</Text>}
 
       {/* 300+ Seat Map Grid */}
       <View style={styles.seatMapWrapper}>
@@ -324,13 +333,14 @@ export default function SeatSelectionScreen() {
           <Text variant="h2" color="gold">
             {formatNaira(totalPrice)}
           </Text>
+          <Text variant="caption">Seat subtotal · up to 8 seats</Text>
         </View>
 
         <Button
           title={selectedSeats.length > 0 ? `Reserve Seats` : 'Select Seats'}
           onPress={handleReserve}
           loading={reserving}
-          disabled={selectedSeats.length === 0}
+          disabled={selectedSeats.length === 0 || Boolean(loadError)}
           variant="primary"
           size="lg"
           style={styles.reserveButton}
@@ -373,9 +383,19 @@ export default function SeatSelectionScreen() {
             </View>
           )}
 
+          {paymentState === 'pending' && (
+            <View style={styles.modalActions}>
+              <Badge label="CONFIRMATION PENDING" variant="warning" />
+              <Text variant="body">{paymentError || 'Your ticket will appear after Flutterwave confirms the payment.'}</Text>
+              <Button title="Check payment status" onPress={handleCheckStatus} />
+              <Button title="Open checkout" onPress={handlePayNow} variant="outline" />
+              <Button title="Release seats" onPress={handleRelease} variant="ghost" />
+            </View>
+          )}
+
           {/* STATE 2: SUCCESS */}
           {paymentState === 'success' && activeBooking && (
-            <>
+            <Animated.View entering={FadeInDown.duration(240)} style={styles.modalContent}>
               <View style={styles.successIconCircle}>
                 <Ionicons name="checkmark-circle" size={42} color={colors.gold} />
               </View>
@@ -456,7 +476,7 @@ export default function SeatSelectionScreen() {
                   size="sm"
                 />
               </View>
-            </>
+            </Animated.View>
           )}
 
           {/* STATE 3: FAILED OR CANCELLED */}
@@ -491,7 +511,7 @@ export default function SeatSelectionScreen() {
                   </Text>
                 </Text>
                 <Text variant="caption" color="secondary">
-                  Seats Held:{' '}
+                  Seats:{' '}
                   <Text variant="caption" color="primary">
                     {(activeBooking?.seats || selectedSeats).map((s) => s.label).join(', ')}
                   </Text>
@@ -503,13 +523,14 @@ export default function SeatSelectionScreen() {
                   </Text>
                 </Text>
                 <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
-                  Your seats remain temporarily reserved. You can retry payment immediately.
+                  Check your reservation status before attempting another payment.
                 </Text>
               </View>
 
               <View style={styles.modalActions}>
                 <Button
-                  title="Retry Payment"
+                  disabled={activeBooking?.status !== 'pending'}
+                  title="Open checkout"
                   onPress={() => handlePayNow()}
                   variant="primary"
                   size="md"
@@ -521,8 +542,11 @@ export default function SeatSelectionScreen() {
                   variant="outline"
                   size="sm"
                 />
+                {activeBooking?.status === 'pending' && (
+                  <Button title="Release seats" onPress={handleRelease} variant="ghost" size="sm" />
+                )}
                 <Button
-                  title="Pay Later (View in My Tickets)"
+                  title="View in My Tickets"
                   onPress={() => {
                     setShowSuccessSheet(false);
                     router.replace('/(tabs)/tickets');
@@ -584,13 +608,16 @@ export default function SeatSelectionScreen() {
                   </Text>
                 </Text>
                 <Text variant="caption" color="secondary">
+                  Service fee: {formatNaira(createdBooking?.serviceFee ?? 0)}
+                </Text>
+                <Text variant="caption" color="secondary">
                   Total Payable:{' '}
                   <Text variant="caption" color="gold">
                     {formatNaira(createdBooking?.totalAmount ?? totalPrice)}
                   </Text>
                 </Text>
                 <Text variant="micro" color="tertiary" style={{ marginTop: 2 }}>
-                  Pay via Flutterwave Standard Checkout to immediately issue your scannable QR ticket.
+                  Your QR ticket appears after Flutterwave confirms the payment.
                 </Text>
               </View>
 
@@ -602,8 +629,11 @@ export default function SeatSelectionScreen() {
                   size="md"
                   iconLeading={<Ionicons name="card-outline" size={18} color={colors.textInverse} />}
                 />
+                {activeBooking?.status === 'pending' && (
+                  <Button title="Release seats" onPress={handleRelease} variant="ghost" size="sm" />
+                )}
                 <Button
-                  title="Pay Later (View in My Tickets)"
+                  title="View in My Tickets"
                   onPress={() => {
                     setShowSuccessSheet(false);
                     router.replace('/(tabs)/tickets');

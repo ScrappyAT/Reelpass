@@ -13,6 +13,7 @@
     "build:api": "npm run build --workspace=@matinee/api",
     "build": "npm run build:shared && npm run build:api",
     "start": "npm run start --workspace=@matinee/api",
+    "start:staging": "node scripts/start-staging.cjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "db:setup": "npm run db:setup --workspace=@matinee/api",
