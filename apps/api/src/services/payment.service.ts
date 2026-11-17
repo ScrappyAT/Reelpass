@@ -71,6 +71,19 @@ export function providerId(value: unknown): string | undefined {
   return /^[1-9][0-9]{0,19}$/.test(id) ? id : undefined;
 }
 
+export const VERIFIED_FLUTTERWAVE_HOSTS: ReadonlySet<string> = new Set([
+  'checkout.flutterwave.com',
+  'checkout-v3.flutterwave.com',
+  'flutterwave.com',
+]);
+
+export function isLegitimateFlutterwaveCheckoutUrl(url: URL): boolean {
+  if (url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  if (url.port && url.port !== '443') return false;
+  return VERIFIED_FLUTTERWAVE_HOSTS.has(url.hostname.toLowerCase());
+}
+
 export async function initializePayment(input: {
   reference: string; amountKobo: number; currency: string; email: string; name: string;
 }) {
@@ -82,12 +95,55 @@ export async function initializePayment(input: {
     customer: { email: input.email, name: input.name },
     customizations: { title: 'ReelPass Cinema Tickets' },
   }) as { link?: unknown };
-  if (typeof data.link !== 'string') throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
-  let url: URL;
-  try { url = new URL(data.link); } catch { throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK'); }
-  if (url.origin !== 'https://checkout.flutterwave.com' || url.username || url.password) {
+
+  const responseShape = typeof data === 'object' && data !== null ? Object.keys(data as object).sort() : typeof data;
+
+  if (typeof data?.link !== 'string') {
+    console.warn(JSON.stringify({
+      event: 'checkout_link_diagnostic',
+      responseShape,
+      protocol: undefined,
+      hostname: undefined,
+      error: 'missing_or_invalid_link_type',
+    }));
     throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
   }
+
+  let url: URL;
+  try {
+    url = new URL(data.link.trim());
+  } catch {
+    console.warn(JSON.stringify({
+      event: 'checkout_link_diagnostic',
+      responseShape,
+      protocol: undefined,
+      hostname: undefined,
+      error: 'malformed_url',
+    }));
+    throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
+  }
+
+  const hostname = url.hostname.toLowerCase();
+  const protocol = url.protocol;
+
+  console.info(JSON.stringify({
+    event: 'checkout_link_diagnostic',
+    responseShape,
+    protocol,
+    hostname,
+  }));
+
+  if (!isLegitimateFlutterwaveCheckoutUrl(url)) {
+    console.warn(JSON.stringify({
+      event: 'checkout_link_rejected',
+      responseShape,
+      protocol,
+      hostname,
+      reason: 'unauthorized_checkout_url',
+    }));
+    throw new GatewayError('GATEWAY_INVALID_CHECKOUT_LINK');
+  }
+
   return url.href;
 }
 
