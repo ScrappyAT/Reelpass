@@ -36,14 +36,14 @@ The standalone Android APK has been verified end-to-end on a physical device, co
 
 ## 🚀 Live Cloud Infrastructure
 
-The graduation candidate is deployed to Render staging, backed by Neon PostgreSQL and Render Key Value. The previous release remains on Railway.
+The graduation candidate is deployed to Render staging, backed by Neon PostgreSQL and Upstash Redis. The previous release remains on Railway.
 
 | Component | Provider / Service | Details / Endpoint |
 |---|---|---|
 | **API Server (Staging)** | **Render** | Staging URL: `https://reelpass-api.onrender.com/api/v1` |
 | **API Server (Production/Baseline)** | **Railway** | Production URL: `https://matineeapi-production.up.railway.app/api/v1` |
 | **Relational Database** | **Neon PostgreSQL** | Serverless PostgreSQL 16 with connection pooling and strict unique constraints |
-| **In-Memory Cache** | **Render Key Value / Redis Cloud** | Managed Redis executing atomic Lua seat-hold acquisition with 5-minute TTL |
+| **In-Memory Cache** | **Upstash Redis (Staging) / Redis Cloud (Baseline)** | Managed Redis executing atomic Lua seat-hold acquisition with 5-minute TTL |
 | **Payment Gateway** | **Flutterwave v3** | Hosted standard checkout (`checkout-v2.dev-flutterwave.com`), server-side verification API, and webhook signature validation |
 | **Movie Metadata** | **TMDB API** | Live movie details, posters, and backdrops with offline fallbacks |
 | **Mobile Client** | **Expo / EAS** | React Native Android preview APK (`54d8e1be-0d50-430a-a12a-7d5a0636c967`) with hermes bytecode bundle |

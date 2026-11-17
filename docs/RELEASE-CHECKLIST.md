@@ -24,13 +24,13 @@ pwsh -NoProfile -File scripts/test-isolated.ps1
 
 ## Staging arrangement (Render Free & Neon)
 
-The graduation release candidate is deployed to a **Render Free web service** at `https://reelpass-api.onrender.com/api/v1`. Its launcher starts the compiled API and BullMQ worker as separate Node processes and exits if either dies. Render Free sleeps after 15 minutes without inbound traffic and can take about a minute to wake. Warm it before opening the app. Free Render Key Value provides Redis compatibility on the internal network. PostgreSQL is hosted on **Neon** with pooled connections. PostgreSQL stores the webhook inbox, capture records, refund ledger, bookings, and tickets across service restarts.
+The graduation release candidate is deployed to a **Render Free web service** at `https://reelpass-api.onrender.com/api/v1`. Its launcher starts the compiled API and BullMQ worker as separate Node processes and exits if either dies. Render Free sleeps after 15 minutes without inbound traffic and can take about a minute to wake. Warm it before opening the app. **Upstash Redis** provides managed Redis compatibility for staging seat holds and queue processing. PostgreSQL is hosted on **Neon** with pooled connections. PostgreSQL stores the webhook inbox, capture records, refund ledger, bookings, and tickets across service restarts.
 
 The previous Railway API (`https://matineeapi-production.up.railway.app/api/v1`) remains the October release. Render staging now serves the current graduation candidate branch (`codex/matinee-graduation-payments`).
 
 ## Deployment and calendar
 
-1. Staging deployment uses Render Free at `https://reelpass-api.onrender.com/api/v1` backed by Neon PostgreSQL and Render Key Value / Redis.
+1. Staging deployment uses Render Free at `https://reelpass-api.onrender.com/api/v1` backed by Neon PostgreSQL and Upstash Redis.
 2. Lagos-time calendar previews and applies deterministic future showtimes and seat inventories:
 
    ```bash
@@ -44,7 +44,7 @@ The previous Railway API (`https://matineeapi-production.up.railway.app/api/v1`)
    | --- | --- |
    | `NODE_ENV`, `DATA_MODE`, `PORT`, `API_PREFIX` | `production`, `postgres`, host-injected port for the API, `/api/v1` |
    | `DATABASE_URL`, `PG_POOL_MAX`, `DATABASE_READ_URL` | Pooled Neon PostgreSQL connection URL. Read replica optional. |
-   | `REDIS_URL`, `REDIS_TLS` | Redis-compatible endpoint (Render Key Value internal URL or managed TLS endpoint). |
+   | `REDIS_URL`, `REDIS_TLS` | Managed Upstash Redis endpoint (`rediss://...`) with TLS. |
    | `JWT_SECRET`, `TRUST_PROXY_HOPS` | Independent secret (≥ 32 chars). Proxy hop count configured for Render proxy. |
    | `FLW_SECRET_KEY`, `FLW_SECRET_HASH` | Flutterwave sandbox `FLWSECK_TEST-` key and webhook hash. |
    | `FLW_CALLBACK_URL`, `FLW_CURRENCY`, `SERVICE_FEE_KOBO` | `https://reelpass-api.onrender.com/api/v1/payments/callback`, `NGN`, `15000` (₦150). |
@@ -58,9 +58,9 @@ Validated with sandbox test credentials, exact callback (`https://reelpass-api.o
 
 | Scenario | Evidence captured |
 | --- | --- |
-| Checkout and retry | Held test seat A4 (Auditorium 2, Oppenheimer, ReelPass Cinemas Lekki) for ₦4,500 + ₦150 service fee (465,000 integer kobo total). Initialized checkout via `POST /payments/initialize` and verified unique reference `FLW-RP-...` and single checkout link targeting `checkout-v2.dev-flutterwave.com`. Repeated initialization with identical key returned the same link. |
-| Signed delivery and ticket | Completed test payment in Flutterwave sandbox. Webhook received with valid HMAC signature and processed by BullMQ background worker. Worker verified transaction with Flutterwave API, settled payment, and confirmed booking in PostgreSQL. Issued unique ticket `tkt-...` and QR pass `REELPASS-BOOKING-RP-...`. |
-| Android redirect & UI callback observation | In-app browser dismissed and redirected to `mobile://payment-complete?status=successful&tx_ref=...`. The callback screen temporarily displayed `"Payment Incomplete"` due to an asynchronous timing race before the background worker settlement settled in client state. Authoritative check in **"My Tickets"** -> **"Upcoming"** immediately confirmed booking status **`CONFIRMED`** and rendered the active scannable QR ticket. |
+| Checkout and retry | Held test seat E1 (Auditorium 2, Oppenheimer, ReelPass Cinemas Lekki) for ₦4,500 + ₦150 service fee (465,000 integer kobo total). Initialized checkout via `POST /payments/initialize` and verified unique reference `FLW-RP-...` and single checkout link targeting `checkout-v2.dev-flutterwave.com`. Repeated initialization with identical key returned the same link. |
+| Signed delivery and ticket | Completed test payment in Flutterwave sandbox. Webhook received with valid HMAC signature and processed by BullMQ background worker. Worker verified transaction with Flutterwave API, settled payment, and confirmed booking in PostgreSQL. Issued unique ticket `tkt-...` and QR pass string. |
+| Android redirect & UI callback observation | In-app browser dismissed and redirected to `mobile://payment-complete?status=successful&tx_ref=...`. The callback screen displayed `"Payment Incomplete"` upon return. Authoritative check in **"My Tickets"** -> **"Upcoming"** immediately confirmed booking status **`CONFIRMED`** and rendered the active scannable QR ticket. This discrepancy is documented as an observed UI/callback issue under investigation without asserting a confirmed root cause. |
 | Duplicate and unrelated booking | Redelivering webhook event processed idempotently with zero duplicate tickets or duplicate captures. Presenting a transaction for an unrelated booking rejected. Local mocked unit tests cover altered amount, currency, reference, status, ownership, and invalid signatures. |
 | Failed or abandoned payment | Leaving checkout without paying allows seat hold to expire (5-minute TTL) or be explicitly released, returning seat inventory to the available pool. |
 | Cancellation and refund | Showtimes cancelled by administrator create a single refund intent, append-only ledger, and provider reconciliation. Missing or mismatched records go to review without inventing refunds. Local mocked tests cover timeout, crash, and late capture scenarios. |
@@ -79,7 +79,7 @@ Validated with sandbox test credentials, exact callback (`https://reelpass-api.o
   - High-level animated application GIF for repository `README.md`.
   - Comprehensive portfolio case study write-up.
   - 5-app comparative cinema UX study document.
-  - Cosmetic refinement for the mobile `/payment-complete` callback screen polling.
+  - Investigation and resolution of the mobile `/payment-complete` callback screen display discrepancy.
   - Screen reader & extreme dynamic font scaling deep audit.
   - Hosted read routing with an active physical PostgreSQL read replica.
 

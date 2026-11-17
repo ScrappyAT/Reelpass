@@ -34,7 +34,7 @@ Original submission on 26 October 2026. Release candidate verified on 11 Novembe
 
 1. **Flutterwave Payment Gateway**: All payment operations use **Flutterwave Standard Checkout v3** in **sandbox test mode** (with verified sandbox checkout host `checkout-v2.dev-flutterwave.com` allowlisted). No real banking accounts, debit cards, or monetary funds are debited.
 2. **Cinema & Catalog Data**: Cinema chains, auditoriums, showtimes, seat maps, and pricing are **fictional demonstration fixtures** for Nigerian cities (Lagos, Abuja, Port Harcourt, Ibadan). Movie details are integrated with TMDB with offline demo fallback.
-3. **Concurrency Load Testing**: The 500-VU high-concurrency benchmark was conducted in an **isolated containerized local environment** to stress-test transactional database row locks and Redis atomic holds under maximum saturation. It is distinct from hosted multi-region cloud performance on Render/Neon.
+3. **Concurrency Load Testing**: The 500-VU high-concurrency benchmark was conducted in an **isolated containerized local environment** to stress-test transactional database row locks and Redis atomic holds under maximum saturation. It is distinct from hosted cloud performance on Render/Neon/Upstash.
 4. **iOS Platform Scope**: iOS functionality was demonstrated and validated using **Expo Go** and the Metro bundler; it is not distributed as an Apple App Store / IPA release.
 5. **Seat Hold Duration Discrepancy Review (5-Minute vs 10-Minute Hold)**:
    - **Task B Assessment Suggestion**: The graduation rubric suggested a 10-minute reservation hold window.
@@ -43,22 +43,25 @@ Original submission on 26 October 2026. Release candidate verified on 11 Novembe
 
 ---
 
-## 3. Physical Device Verification Audit (November 17, 2026)
+## 3. Physical Device Verification Audits
 
-The entire reservation and payment lifecycle was executed and verified on a physical Android device using standalone APK build `54d8e1be-0d50-430a-a12a-7d5a0636c967` against the deployed Render staging API (`https://reelpass-api.onrender.com/api/v1`):
+### 3.1 November 17, 2026 Staging Verification (Seat `E1`)
+
+The reservation and payment lifecycle was executed and verified on a physical Android device using standalone APK build `54d8e1be-0d50-430a-a12a-7d5a0636c967` against the deployed Render staging API (`https://reelpass-api.onrender.com/api/v1`), backed by Neon PostgreSQL and Upstash Redis:
 
 ```text
 ================================================================================
-PHYSICAL ANDROID DEVICE VERIFICATION AUDIT TRAIL
+PHYSICAL ANDROID DEVICE VERIFICATION AUDIT TRAIL (NOVEMBER 17, 2026)
 ================================================================================
 Verification Date:      November 17, 2026
 Target Backend API:     https://reelpass-api.onrender.com/api/v1 (Render Staging)
+Staging Infrastructure: Neon PostgreSQL 16 + Upstash Redis
 Android Standalone APK: EAS Build 54d8e1be-0d50-430a-a12a-7d5a0636c967
 Package Identifier:     com.scrappy4rl.reelpass (Expo SDK 57 / React Native 0.86)
 Customer Account:       Alex Vance (demo@reelpass.app / u-1001-demo-user-id)
 Movie Title:            Oppenheimer (Auditorium 2 — Dolby Atmos Soundstage)
 Cinema Location:        ReelPass Cinemas Lekki, Lagos
-Seat Reserved:          A4 (Standard Tier)
+Seat Reserved:          E1 (Standard Tier)
 Base Ticket Amount:     ₦4,500.00 (450,000 integer kobo)
 Service Fee:            ₦150.00 (15,000 integer kobo)
 Total Billed:           ₦4,650.00 (465,000 integer kobo)
@@ -67,16 +70,43 @@ Checkout Host:          checkout-v2.dev-flutterwave.com (verified sandbox allowl
 Android Redirect:       mobile://payment-complete?status=successful&tx_ref=...
 Server Verification:    HTTP 200 { success: true, isConfirmed: true, status: 'confirmed' }
 Ticket Issuance:        Confirmed; unique ticket created with booking settlement
-QR Pass String:         REELPASS-BOOKING-RP-128807 / REELPASS-TKT-A4-RP-128807
 My Tickets Retrieval:   CONFIRMED; active pass rendered in "Upcoming" with scannable QR
 ================================================================================
 ```
 
-### Observed Callback Screen Behavior & Resolution
-- **Observation**: Upon returning from the Flutterwave browser checkout via deep link (`mobile://payment-complete`), the mobile callback screen briefly rendered a `"Payment Incomplete"` UI status.
-- **Root Cause Analysis**: This is an asynchronous client-side race condition: the `/payment-complete` route evaluates payment status immediately upon app regain-of-focus, before the backend BullMQ worker finishes processing the asynchronous webhook/verification and committing the `CONFIRMED` status to PostgreSQL.
-- **Authoritative Resolution**: In the database, the payment was verified and settled, and the booking was transitioned to `CONFIRMED`. Navigating to **"My Tickets"** -> **"Upcoming"** immediately queries the authoritative API and displays the booking with status **`CONFIRMED`** and renders the complete digital ticket with a scannable QR code.
-- **Follow-up**: The core transactional integrity, payment verification, and ticket generation are 100% sound. A cosmetic client polling refinement is tracked for the next mobile client release.
+### Observed Issue: Callback Screen Status Display
+- **Observed Behavior**: Upon returning from the Flutterwave browser checkout to the app via deep link (`mobile://payment-complete`), the mobile callback screen displayed a `"Payment Incomplete"` UI status.
+- **Ticket Verification in "My Tickets"**: Despite the callback screen message, checking **"My Tickets"** -> **"Upcoming"** showed the booking status as **`CONFIRMED`** and successfully rendered the issued digital ticket with its scannable QR pass.
+- **Current Status**: This discrepancy is recorded strictly as an observed UI/callback display issue. The underlying payment was processed and the booking confirmed in the database, with the ticket accessible to the user, but the root cause of the incorrect callback screen message has not been independently verified and remains an open item for investigation.
+
+### 3.2 Historical Baseline Verification (Booking `RP-128807`, Seat `A4`)
+
+For historical reference and baseline comparison, the October 26, 2026 physical device test on APK build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c` against the Railway API is preserved below:
+
+```text
+================================================================================
+HISTORICAL BASELINE PHYSICAL ANDROID AUDIT TRAIL (OCTOBER 26, 2026)
+================================================================================
+Verification Date:      October 26, 2026
+Target Backend API:     https://matineeapi-production.up.railway.app/api/v1 (Railway)
+Android Standalone APK: EAS Build d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c
+Customer Account:       Alex Vance (demo@reelpass.app / u-1001-demo-user-id)
+Booking Reference:      RP-128807
+Internal Booking ID:    bk-1793015322940-505
+Movie Title:            Oppenheimer (Auditorium 2 — Dolby Atmos Soundstage)
+Cinema Location:        ReelPass Cinemas Lekki, Lagos
+Seat Reserved:          A4 (Standard Tier)
+Total Amount:           ₦4,500.00 (450,000 integer kobo)
+Payment Gateway:        Flutterwave Standard Checkout (Sandbox)
+Payment Reference:      FLW-RP-128807-1793015337858
+Transaction ID:         1793015337858-614
+Android Redirect:       mobile://payment-complete?status=successful&tx_ref=...
+Server Verification:    HTTP 200 { success: true, isConfirmed: true, status: 'confirmed' }
+Ticket ID:              tkt-bk-1793015322940-505-1
+QR Pass Data:           REELPASS-BOOKING-RP-128807 / REELPASS-TKT-A4-RP-128807
+My Tickets Retrieval:   Confirmed; displays pass in "Upcoming" tab with scannable QR
+================================================================================
+```
 
 ---
 
@@ -119,7 +149,7 @@ My Tickets Retrieval:   CONFIRMED; active pass rendered in "Upcoming" with scann
 
 - **Mobile Client**: React Native 0.86, Expo SDK 57, Expo Router, TypeScript, `react-native-qrcode-svg`, `expo-web-browser`
 - **Backend API**: Node.js 20+, Express, TypeScript, Zod, JWT (`jsonwebtoken`), bcryptjs
-- **Database & Cache**: PostgreSQL 16 (Neon), Redis 7 (Render Key Value / Redis Cloud), BullMQ
+- **Database & Cache**: PostgreSQL 16 (Neon), Redis (Upstash Redis for Staging / Redis Cloud for Baseline), BullMQ
 - **Payment Gateway**: Flutterwave Standard Checkout v3 (Sandbox Mode, `checkout-v2.dev-flutterwave.com`)
 - **Deployment**: Render Free Web Service (`https://reelpass-api.onrender.com/api/v1`), EAS Build (`54d8e1be-0d50-430a-a12a-7d5a0636c967`)
 
@@ -134,7 +164,7 @@ The following audit compares the project deliverables against the graduation ass
 | **Architecture & Monorepo** | npm workspaces monorepo, Expo SDK 57, Node 20+, TypeScript, clean layering | **Compliant** | Monorepo structure in `apps/mobile`, `apps/api`, `packages/shared`. [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **Concurrency & Double-Booking Prevention** | Prevent race conditions and duplicate claims under concurrent load | **Compliant** | Redis Lua atomic hold scripts + PostgreSQL `SELECT ... FOR UPDATE` + unique composite index `(showtime_id, seat_id)`. Zero double bookings in 500 VU / 50 seat test. | [Load Report](load-tests/GRADUATION-500X50.md) |
 | **Payment Integration** | Flutterwave Checkout v3 with sandbox support, webhook processing, idempotency, failure recovery | **Compliant** | End-to-end sandbox checkout with host validation, HMAC webhook verification, BullMQ background settlement, and duplicate prevention. | [Payment Architecture](docs/ARCHITECTURE.md#9-flutterwave-payment-architecture) |
-| **Mobile Client & Standalone Build** | Functional mobile app with seat selection, deep links, ticket display, scannable QR code | **Compliant** | Verified on physical Android hardware using standalone EAS Build `54d8e1be-0d50-430a-a12a-7d5a0636c967`. | [Audit Trail](#3-physical-device-verification-audit-november-17-2026) |
+| **Mobile Client & Standalone Build** | Functional mobile app with seat selection, deep links, ticket display, scannable QR code | **Compliant** | Verified on physical Android hardware using standalone EAS Build `54d8e1be-0d50-430a-a12a-7d5a0636c967` (Seat E1). | [Audit Trail](#3-physical-device-verification-audits) |
 | **Timezone & Showtimes** | Accurate Nigerian cinema scheduling in Africa/Lagos (WAT) | **Compliant** | Explicit `Intl.DateTimeFormat.formatToParts()` in `apps/mobile/src/utils/datetime.ts`. Additive future showtimes planner. | [Implementation](docs/GRADUATION-IMPLEMENTATION.md) |
 | **Seat Hold TTL** | 10-minute hold suggested vs 5-minute implemented | **Reviewed & Documented** | Intentionally set to 5 minutes (`SEAT_HOLD_TTL_SECONDS=300`) as an anti-hoarding concurrency optimization. Fully configurable via env var. | [Section 2.5](#2-mandatory-project-disclaimers--scope-boundaries) |
 | **Engineering Documentation** | System architecture, security audit, sharding, traffic, components, learning log | **Compliant** | All required documentation present and cross-linked in repository. | [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md), [LEARNING-LOG.md](docs/LEARNING-LOG.md) |
@@ -152,8 +182,8 @@ In accordance with rigorous assessment standards, the following items are transp
    - External case study article publication on personal portfolio remains pending author publication.
 4. **Competitor Design Study**:
    - A structured 5-app comparative cinema UX study document is pending standalone collation.
-5. **Mobile Callback Screen Polish**:
-   - The `/payment-complete` callback screen transiently renders `"Payment Incomplete"` before the background worker settlement is reflected in the client state. The booking is confirmed in the database and visible in "My Tickets", but a reactive polling hook is planned to smooth out this UI transition.
+5. **Callback Screen Display Investigation**:
+   - On the physical device test, returning to `/payment-complete` displayed a "Payment Incomplete" message even though "My Tickets" showed the booking as `CONFIRMED` with a valid QR pass. This is documented as an observed issue requiring further investigation rather than an assumed or confirmed root cause.
 6. **Screen Reader & Dynamic Font Scaling Deep Audit**:
    - Primary user flows provide accessible touch targets (≥ 44×44 pt); comprehensive TalkBack / VoiceOver labeling across secondary modal states remains open for deeper audit.
 7. **Production Read Replica Pool**:
