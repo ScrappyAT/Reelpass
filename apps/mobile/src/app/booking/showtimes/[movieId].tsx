@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   ScrollView,
@@ -16,7 +16,7 @@ import {
   Skeleton,
   EmptyState,
 } from '../../../components/ui';
-import { api } from '../../../services/api';
+import { api, ApiConnectionError } from '../../../services/api';
 import { useLocation, cinemaLocationLabel } from '../../../context/LocationContext';
 import { buildLagosDateChips, formatShowtimeTime, getLagosDateKey } from '../../../utils/datetime';
 
@@ -28,34 +28,88 @@ export default function ShowtimeSelectionScreen() {
   const [movie, setMovie] = useState<Movie | null>(null);
   const [cinemas, setCinemas] = useState<Cinema[]>([]);
   const [showtimes, setShowtimes] = useState<Showtime[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingCinemas, setLoadingCinemas] = useState(true);
+  const [loadingShowtimes, setLoadingShowtimes] = useState(true);
+  const [showtimesError, setShowtimesError] = useState<string | null>(null);
 
   // Date chips are built from the Africa/Lagos calendar, not the device locale.
   const dateChips = useMemo(() => buildLagosDateChips(4), []);
   const [selectedDate, setSelectedDate] = useState<string>(dateChips[0].id);
 
-  useEffect(() => {
-    const loadData = async () => {
-      if (!movieId) return;
-      try {
-        const [movieRes, cinemasRes, showtimesRes] = await Promise.all([
-          api.getMovieById(movieId),
-          api.getCinemas(),
-          api.getShowtimes(movieId),
-        ]);
-
-        if (movieRes.success && movieRes.data) setMovie(movieRes.data);
-        if (cinemasRes.success && cinemasRes.data) setCinemas(cinemasRes.data);
-        if (showtimesRes.success && showtimesRes.data) setShowtimes(showtimesRes.data);
-      } catch (e) {
-        console.warn('Failed to load showtimes:', e);
-      } finally {
-        setLoading(false);
+  const fetchMovie = useCallback(async () => {
+    if (!movieId) return;
+    try {
+      const res = await api.getMovieById(movieId);
+      if (res.success && res.data) {
+        setMovie(res.data);
       }
-    };
-
-    loadData();
+    } catch (e) {
+      console.warn('Failed to load movie:', e);
+    }
   }, [movieId]);
+
+  const fetchCinemas = useCallback(async () => {
+    setLoadingCinemas(true);
+    try {
+      const res = await api.getCinemas();
+      if (res.success && res.data) {
+        setCinemas(res.data);
+      }
+    } catch (e) {
+      console.warn('Failed to load cinemas:', e);
+    } finally {
+      setLoadingCinemas(false);
+    }
+  }, []);
+
+  const fetchShowtimes = useCallback(async () => {
+    if (!movieId) return;
+    setLoadingShowtimes(true);
+    setShowtimesError(null);
+    try {
+      const res = await api.getShowtimes(movieId);
+      if (res.success && res.data) {
+        setShowtimes(res.data);
+        setShowtimesError(null);
+      } else {
+        const errorMsg = res.error?.message || 'Failed to load showtimes from server.';
+        setShowtimesError(errorMsg);
+      }
+    } catch (e: unknown) {
+      console.warn('Failed to load showtimes:', e);
+      const errMsg =
+        e instanceof ApiConnectionError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : 'Unable to connect to showtimes service. Please check your network and try again.';
+      setShowtimesError(errMsg);
+    } finally {
+      setLoadingShowtimes(false);
+    }
+  }, [movieId]);
+
+  const handleRetry = useCallback(() => {
+    fetchShowtimes();
+    if (cinemas.length === 0) {
+      fetchCinemas();
+    }
+    if (!movie) {
+      fetchMovie();
+    }
+  }, [fetchShowtimes, fetchCinemas, fetchMovie, cinemas.length, movie]);
+
+  useEffect(() => {
+    if (!movieId) return;
+    fetchMovie();
+    fetchCinemas();
+    fetchShowtimes();
+  }, [movieId, fetchMovie, fetchCinemas, fetchShowtimes]);
+
+  const loading =
+    !showtimesError &&
+    ((loadingCinemas && cinemas.length === 0) ||
+      (loadingShowtimes && showtimes.length === 0));
 
   // Reflect the chosen location: show the selected city's cinemas,
   // with the specifically chosen cinema first.
@@ -149,6 +203,14 @@ export default function ShowtimeSelectionScreen() {
               </Card>
             ))}
           </View>
+        ) : showtimesError && showtimes.length === 0 ? (
+          <EmptyState
+            icon="alert-circle-outline"
+            title="Failed to Load Showtimes"
+            description={showtimesError}
+            actionTitle="Retry"
+            onAction={handleRetry}
+          />
         ) : visibleCinemas.length === 0 ? (
           <EmptyState
             title="No Showtimes Found"
@@ -156,6 +218,26 @@ export default function ShowtimeSelectionScreen() {
           />
         ) : (
           <>
+            {showtimesError && (
+              <Card variant="default" padding="md" style={styles.errorBanner}>
+                <View style={styles.errorRow}>
+                  <Ionicons name="alert-circle-outline" size={20} color={colors.gold} />
+                  <Text variant="caption" color="secondary" style={{ flex: 1 }}>
+                    {showtimesError}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={handleRetry}
+                    style={styles.retryButton}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry loading showtimes"
+                  >
+                    <Text variant="caption" color="gold" style={{ fontWeight: '700' }}>
+                      Retry
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </Card>
+            )}
             <Text variant="micro" color="tertiary" style={styles.cityLabel}>
               {city.toUpperCase()} • DEMO CINEMAS
             </Text>
@@ -342,5 +424,18 @@ const styles = StyleSheet.create({
   showtimePrice: {
     fontSize: 11,
     marginTop: 2,
+  },
+  errorBanner: {
+    marginBottom: spacing.md,
+    borderColor: colors.borderGold,
+  },
+  errorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  retryButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
   },
 });

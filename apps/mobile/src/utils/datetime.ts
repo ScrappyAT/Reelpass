@@ -29,13 +29,27 @@ export function formatShowtimeDate(iso: string | Date): string {
 /** "2026-10-15" — Lagos calendar day key for grouping/filtering showtimes. */
 export function getLagosDateKey(iso: string | Date): string {
   const date = typeof iso === 'string' ? new Date(iso) : iso;
-  // en-CA formats dates as YYYY-MM-DD regardless of region.
-  return new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-NG', {
     timeZone: LAGOS_TIME_ZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(date);
+  }).formatToParts(date);
+
+  let year = '';
+  let month = '';
+  let day = '';
+  for (const part of parts) {
+    if (part.type === 'year') {
+      year = part.value;
+    } else if (part.type === 'month') {
+      month = part.value;
+    } else if (part.type === 'day') {
+      day = part.value;
+    }
+  }
+
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 }
 
 export interface DateChip {
