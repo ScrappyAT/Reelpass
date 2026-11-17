@@ -5,14 +5,25 @@ const base = 'https://api.flutterwave.com/v3';
 type FetchMock = (url: string, init?: RequestInit) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 let mockFetch: FetchMock | null = null;
 
-export function setFlutterwaveMock(handler: FetchMock | null) {
+let mockSandboxMode: boolean | null = null;
+
+export function setFlutterwaveMock(handler: FetchMock | null, isSandbox: boolean | null = null) {
   if (env.NODE_ENV !== 'test') throw new Error('Gateway mocks are test-only');
   mockFetch = handler;
+  mockSandboxMode = isSandbox;
 }
 
 function sandboxKey() {
   const key = (env.FLW_SECRET_KEY || env.FLUTTERWAVE_SECRET_KEY || '').trim();
   return /^FLWSECK_TEST-[a-z0-9_-]+$/i.test(key) && !/xxxx|placeholder|^FLWSECK_TEST-your-/i.test(key) ? key : null;
+}
+
+export function isSandboxMode(): boolean {
+  if (mockSandboxMode !== null) return mockSandboxMode;
+  if (sandboxKey() !== null) return true;
+  const rawKey = (env.FLW_SECRET_KEY || env.FLUTTERWAVE_SECRET_KEY || process.env.FLW_SECRET_KEY || process.env.FLUTTERWAVE_SECRET_KEY || '').trim();
+  if (/^FLWSECK_TEST-/i.test(rawKey)) return true;
+  return process.env.FLW_SANDBOX === 'true' || process.env.FLUTTERWAVE_SANDBOX === 'true';
 }
 
 export const isPaymentConfigured = () => Boolean(sandboxKey() || mockFetch);
@@ -77,11 +88,20 @@ export const VERIFIED_FLUTTERWAVE_HOSTS: ReadonlySet<string> = new Set([
   'flutterwave.com',
 ]);
 
-export function isLegitimateFlutterwaveCheckoutUrl(url: URL): boolean {
+export const VERIFIED_SANDBOX_FLUTTERWAVE_HOSTS: ReadonlySet<string> = new Set([
+  ...VERIFIED_FLUTTERWAVE_HOSTS,
+  'checkout-v2.dev-flutterwave.com',
+]);
+
+export function isLegitimateFlutterwaveCheckoutUrl(
+  url: URL,
+  sandbox: boolean = isSandboxMode()
+): boolean {
   if (url.protocol !== 'https:') return false;
   if (url.username || url.password) return false;
   if (url.port && url.port !== '443') return false;
-  return VERIFIED_FLUTTERWAVE_HOSTS.has(url.hostname.toLowerCase());
+  const allowlist = sandbox ? VERIFIED_SANDBOX_FLUTTERWAVE_HOSTS : VERIFIED_FLUTTERWAVE_HOSTS;
+  return allowlist.has(url.hostname.toLowerCase());
 }
 
 export async function initializePayment(input: {

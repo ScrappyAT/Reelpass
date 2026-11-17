@@ -157,3 +157,66 @@ test('initializePayment accepts legitimate checkout links and logs safe diagnost
     setFlutterwaveMock(null);
   }
 });
+
+test('checkout-v2.dev-flutterwave.com is allowed in sandbox mode and rejected in non-sandbox mode', () => {
+  const sandboxCheckoutUrl = new URL('https://checkout-v2.dev-flutterwave.com/v3/hosted/pay/flwlnk-sandbox123');
+
+  // Allowed when sandbox is true
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(sandboxCheckoutUrl, true), true);
+
+  // Rejected when sandbox is false (non-sandbox / production)
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(sandboxCheckoutUrl, false), false);
+
+  // Production checkout hosts remain valid in both sandbox and non-sandbox modes
+  const prodCheckoutUrl = new URL('https://checkout.flutterwave.com/v3/hosted/pay/flwlnk-prod123');
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(prodCheckoutUrl, true), true);
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(prodCheckoutUrl, false), true);
+
+  // HTTP, credentials, and non-standard ports must still be rejected even on sandbox host
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(new URL('http://checkout-v2.dev-flutterwave.com/pay'), true), false);
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(new URL('https://user:pass@checkout-v2.dev-flutterwave.com/pay'), true), false);
+  assert.equal(isLegitimateFlutterwaveCheckoutUrl(new URL('https://checkout-v2.dev-flutterwave.com:8443/pay'), true), false);
+});
+
+test('initializePayment accepts checkout-v2.dev-flutterwave.com in sandbox mode and rejects it in non-sandbox mode', async () => {
+  const input = {
+    reference: 'RP-PAY-SANDBOX',
+    amountKobo: 500000,
+    currency: 'NGN',
+    email: 'test@example.test',
+    name: 'Sandbox Tester',
+  };
+
+  try {
+    // 1. In sandbox mode, checkout-v2.dev-flutterwave.com is accepted
+    setFlutterwaveMock(
+      async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: { link: 'https://checkout-v2.dev-flutterwave.com/v3/hosted/pay/flwlnk-sandbox-test' },
+        }),
+      }),
+      true // sandbox = true
+    );
+    const sandboxLink = await initializePayment(input);
+    assert.equal(sandboxLink, 'https://checkout-v2.dev-flutterwave.com/v3/hosted/pay/flwlnk-sandbox-test');
+
+    // 2. In non-sandbox mode, checkout-v2.dev-flutterwave.com is rejected as GATEWAY_INVALID_CHECKOUT_LINK
+    setFlutterwaveMock(
+      async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: { link: 'https://checkout-v2.dev-flutterwave.com/v3/hosted/pay/flwlnk-sandbox-test' },
+        }),
+      }),
+      false // sandbox = false (production)
+    );
+    await assert.rejects(initializePayment(input), /GATEWAY_INVALID_CHECKOUT_LINK/);
+  } finally {
+    setFlutterwaveMock(null);
+  }
+});
