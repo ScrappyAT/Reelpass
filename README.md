@@ -1,7 +1,7 @@
 # ReelPass (Matinee) — Cinema Ticket Reservation Platform
 
 [![Repository](https://img.shields.io/badge/GitHub-ScrappyAT%2FReelpass-gold?style=flat&logo=github)](https://github.com/ScrappyAT/Reelpass)
-[![EAS Build](https://img.shields.io/badge/EAS%20Build-Android%20APK%20(Tested)-brightgreen?style=flat&logo=expo)](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c)
+[![EAS Build](https://img.shields.io/badge/EAS%20Build-Android%20APK%20(Tested)-brightgreen?style=flat&logo=expo)](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/54d8e1be-0d50-430a-a12a-7d5a0636c967)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x%20%2F%206.x-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![Expo](https://img.shields.io/badge/Expo-SDK%2057%20(React%20Native%200.86)-black?style=flat&logo=expo)](https://expo.dev/)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B%20%2F%20Express-green?style=flat&logo=node.js)](https://nodejs.org/)
@@ -12,17 +12,16 @@
 
 ---
 
-The graduation candidate passed local verification. Its 500-user/50-seat run recorded 50 holds, 450 expected conflicts, zero duplicate seat claims and zero unexpected errors at 1,453.8 ms p95. Hosted staging and the replacement Android download are pending. [Release checklist](docs/RELEASE-CHECKLIST.md) · [Load report](load-tests/GRADUATION-500X50.md) · [Submission evidence](SUBMISSION.md)
+The graduation candidate passed local verification and has been deployed to Render staging and tested on physical Android hardware. Its 500-user/50-seat run recorded 50 holds, 450 expected conflicts, zero duplicate seat claims and zero unexpected errors at 1,453.8 ms p95. [Release checklist](docs/RELEASE-CHECKLIST.md) · [Load report](load-tests/GRADUATION-500X50.md) · [Submission evidence](SUBMISSION.md)
 
-[Demo video](https://drive.google.com/file/d/1QA6IZhR8Ic2HOKR-vXoVW-sP6RIQ6ep1/view) · [Figma designs](https://www.figma.com/design/Gh0kzUtGs4547W19iH4WVa/Dev-and-Design-Bootcamp-Learning-Phase) · [LinkedIn reflection](https://lnkd.in/p/euVj5q72)
+[Demo video](https://drive.google.com/file/d/1QA6IZhR8Ic2HOKR-vXoVW-sP6RIQ6ep1/view?usp=drive_link) · [Figma designs](https://www.figma.com/design/Gh0kzUtGs4547W19iH4WVa/Dev-and-Design-Bootcamp-Learning-Phase) · [LinkedIn reflection](https://lnkd.in/p/euVj5q72)
 
-## 📱 Historical Android Build
+## 📱 Android Standalone Build (Tested)
 
 The standalone Android APK has been verified end-to-end on a physical device, covering user authentication, seat selection, real-time seat locks, Flutterwave sandbox checkout, deep-link return navigation, payment reconciliation, digital ticket retrieval, and scannable QR pass generation.
 
-- **Historical EAS record (download expired)**: [EAS Build `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c)
-- **Git Commit Reference**: `f55ce71` (Tested Android build code) / `a198fb8` (Submission release)
-- **EAS Build ID**: `d5df0b9c-4f0e-4c5f-a8b5-a9612ff3ae1c`
+- **Tested EAS build**: [EAS Build `54d8e1be-0d50-430a-a12a-7d5a0636c967`](https://expo.dev/accounts/scrappy4rl/projects/reelpass/builds/54d8e1be-0d50-430a-a12a-7d5a0636c967)
+- **EAS Build ID**: `54d8e1be-0d50-430a-a12a-7d5a0636c967`
 - **iOS Demonstration**: Demonstrated via **Expo Go** and Metro bundler during development; not published as a standalone App Store / IPA release.
 
 ---
@@ -37,16 +36,17 @@ The standalone Android APK has been verified end-to-end on a physical device, co
 
 ## 🚀 Live Cloud Infrastructure
 
-The previous release is hosted on the infrastructure below. The graduation branch has not been deployed.
+The graduation candidate is deployed to Render staging, backed by Neon PostgreSQL and Render Key Value. The previous release remains on Railway.
 
 | Component | Provider / Service | Details / Endpoint |
 |---|---|---|
-| **API Server** | **Railway** | Production URL: `https://matineeapi-production.up.railway.app/api/v1` |
+| **API Server (Staging)** | **Render** | Staging URL: `https://reelpass-api.onrender.com/api/v1` |
+| **API Server (Production/Baseline)** | **Railway** | Production URL: `https://matineeapi-production.up.railway.app/api/v1` |
 | **Relational Database** | **Neon PostgreSQL** | Serverless PostgreSQL 16 with connection pooling and strict unique constraints |
-| **In-Memory Cache** | **Redis Cloud** | Managed Redis 7 instance executing atomic Lua seat-hold acquisition with 5-minute TTL |
-| **Payment Gateway** | **Flutterwave v3** | Hosted standard checkout, server-side verification API, and webhook signature validation |
+| **In-Memory Cache** | **Render Key Value / Redis Cloud** | Managed Redis executing atomic Lua seat-hold acquisition with 5-minute TTL |
+| **Payment Gateway** | **Flutterwave v3** | Hosted standard checkout (`checkout-v2.dev-flutterwave.com`), server-side verification API, and webhook signature validation |
 | **Movie Metadata** | **TMDB API** | Live movie details, posters, and backdrops with offline fallbacks |
-| **Mobile Client** | **Expo / EAS** | React Native Android preview APK with hermes bytecode bundle |
+| **Mobile Client** | **Expo / EAS** | React Native Android preview APK (`54d8e1be-0d50-430a-a12a-7d5a0636c967`) with hermes bytecode bundle |
 
 ---
 
